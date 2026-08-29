@@ -1,0 +1,31 @@
+sms:
+  api_key: "ВАШ_API_КЛЮЧ_SMS_ACTIVATE"
+  service_code: "op"           # op = Microsoft/Outlook
+  country: 0                   # 0 = Россия
+  max_sms_wait: 300            # секунд ожидания SMS
+
+proxy:
+  enabled: true
+  # Тип: residential (резидентские) или mobile
+  type: "residential"
+  # Формат: host:port:username:password
+  # Можно список (по одному на строку)
+  proxies:
+    - "host1:port1:user1:pass1"
+    - "host2:port2:user2:pass2"
+  # Или URL для ротации (если прокси-провайдер даёт один endpoint)
+  rotation_url: ""
+  # Пауза между сменой IP (сек)
+  rotate_interval: 60
+
+worker:
+  threads: 10                  # параллельных потоков
+  total_registrations: 100     # сколько всего сделать
+  headless: true               # запуск браузера без GUI
+  retry_count: 3               # повторных попыток при ошибке
+
+database:
+  # Если postgres недоступен — можно sqlite для теста
+  type: "sqlite"               # sqlite или postgres
+  sqlite_path: "accounts.db"
+  postgres_url: "postgresql://user:pass@localhost:5432/massreg"

@@ -1,0 +1,19 @@
+database:
+  postgres_url: ''
+  sqlite_path: accounts.db
+  type: sqlite
+proxy:
+  enabled: false
+  proxies: []
+  rotation_url: ''
+  type: http
+sms:
+  api_key: ''
+  country: 0
+  max_sms_wait: 300
+  service_code: op
+worker:
+  headless: true
+  retry_count: 3
+  threads: 5
+  total_registrations: 50
