@@ -67,7 +67,7 @@ class MainWindow(QMainWindow):
         except FileNotFoundError:
             # Создаём дефолтный
             default = {
-                "sms": {"api_key": "", "service_code": "op", "country": 0, "max_sms_wait": 300},
+                "sms": {"api_key": "", "api_url": "", "service": "Microsoft", "country": "all", "max_price": 0, "max_sms_wait": 300},
                 "proxy": {"enabled": False, "type": "http", "proxies": [], "rotation_url": ""},
                 "worker": {"threads": 5, "total_registrations": 50, "headless": True, "retry_count": 3},
                 "database": {"type": "sqlite", "sqlite_path": "accounts.db", "postgres_url": ""}
@@ -353,7 +353,10 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Ошибка", "Введите API-ключ!")
             return
 
-        sms = SMSActivate(api_key)
+        from core.proxy_manager import ProxyManager
+        pm = ProxyManager(self.config)
+        base_url = self.config.get("sms.api_url", "")
+        sms = SMSActivate(api_key, base_url=base_url or None, proxy_manager=pm)
         balance = sms.get_balance()
         if balance is not None:
             self.balance_label.setText(f"Баланс: {balance:.2f} ₽")

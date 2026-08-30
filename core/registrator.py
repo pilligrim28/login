@@ -394,7 +394,7 @@ class MicrosoftRegistrator:
                 log.success(f"Регистрация успешна: {email}")
 
                 # Сохраняем cookies
-                cookies_path = self._save_cookies(context, email)
+                cookies_path = await self._save_cookies(context, email)
 
                 # Подтверждаем номер
                 self.sms.confirm(activation_id)
@@ -488,7 +488,7 @@ class MicrosoftRegistrator:
         except Exception as e:
             log.warning(f"Не удалось нажать Далее: {e}")
 
-    def _save_cookies(self, context, email: str) -> str:
+    async def _save_cookies(self, context, email: str) -> str:
         """
         Сохранить cookies в файл.
 
@@ -504,7 +504,7 @@ class MicrosoftRegistrator:
         safe_email = email.replace("@", "_at_").replace(".", "_dot_")
         cookies_path = f"cookies/{safe_email}.json"
 
-        cookies = context.cookies()
+        cookies = await context.cookies()
 
         with open(cookies_path, "w", encoding="utf-8") as f:
             json.dump(cookies, f, ensure_ascii=False, indent=2)

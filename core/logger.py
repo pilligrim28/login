@@ -53,6 +53,9 @@ class Logger:
     def debug(self, message: str):
         self.logger.debug(message)
 
+    def success(self, message: str):
+        self.logger.info(message)
+
 
 # Глобальный экземпляр
 log = Logger()

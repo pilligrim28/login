@@ -46,12 +46,14 @@ def check_setup(config: Config) -> bool:
 
     # SMS
     api_key = config.get("sms.api_key", "")
-    if not api_key or api_key == "ВАШ_API_КЛЮЧ_SMS_ACTIVATE":
+    if not api_key or api_key == "ВАШ_API_КЛЮЧ":
         log.error("API-ключ SMS не настроен.")
         log.error("Откройте config.yaml и укажите ключ в поле sms.api_key")
         return False
 
-    sms = SMSActivate(api_key)
+    pm = ProxyManager(config)
+    base_url = config.get("sms.api_url", "")
+    sms = SMSActivate(api_key, base_url=base_url or None, proxy_manager=pm)
     balance = sms.get_balance()
     if balance is not None:
         log.success(f"Баланс SMS-Activate: {balance:.2f} ₽")
@@ -62,7 +64,6 @@ def check_setup(config: Config) -> bool:
         return False
 
     # Прокси
-    pm = ProxyManager(config)
     if pm.has_proxies():
         log.success(f"Прокси загружено: {len(pm.proxies)}")
     else:

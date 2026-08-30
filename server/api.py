@@ -34,7 +34,9 @@ class RegistrationRequest(BaseModel):
 
 class SMSConfig(BaseModel):
     api_key: str
-    service_code: str = "op"
+    service: str = "Microsoft"
+    country: str = "all"
+    max_price: float = 0
 
 
 @app.on_event("startup")
@@ -45,7 +47,7 @@ async def startup():
     except FileNotFoundError:
         import yaml
         default = {
-            "sms": {"api_key": "", "service_code": "op", "country": 0},
+            "sms": {"api_key": "", "api_url": "", "service": "Microsoft", "country": "all", "max_price": 0},
             "proxy": {"enabled": False, "type": "http", "proxies": [], "rotation_url": ""},
             "worker": {"threads": 5, "total_registrations": 50, "headless": True},
             "database": {"type": "sqlite", "sqlite_path": "accounts.db"}
@@ -70,10 +72,13 @@ async def health():
 
 @app.get("/balance")
 async def get_balance():
+    from core.proxy_manager import ProxyManager
     api_key = config.get("sms.api_key", "")
     if not api_key:
         raise HTTPException(400, "API-ключ не настроен")
-    sms = SMSActivate(api_key)
+    pm = ProxyManager(config)
+    base_url = config.get("sms.api_url", "")
+    sms = SMSActivate(api_key, base_url=base_url or None, proxy_manager=pm)
     balance = sms.get_balance()
     if balance is None:
         raise HTTPException(500, "Ошибка получения баланса")
@@ -83,7 +88,9 @@ async def get_balance():
 @app.post("/config/sms")
 async def set_sms_config(sms_conf: SMSConfig):
     config.set("sms.api_key", sms_conf.api_key)
-    config.set("sms.service_code", sms_conf.service_code)
+    config.set("sms.service", sms_conf.service)
+    config.set("sms.country", sms_conf.country)
+    config.set("sms.max_price", sms_conf.max_price)
     config.save()
     return {"status": "ok"}
 

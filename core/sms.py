@@ -1,106 +1,160 @@
 """
-Модуль работы с SMS-Activate API.
+Модуль работы с SMS-Activate совместимым API.
 Аренда номеров, получение кодов, управление активациями.
+
+Поддерживается любой провайдер с протоколом SMS-Activate v1
+(endpoint вида https://host/stubs/handler_api.php с query-параметром
+api_key). Базовый URL настраивается через параметр ``base_url``
+конструктора или ключ конфига ``sms.api_url``.
+
+Ответы приходят в текстовом виде, например:
+    ACCESS_BALANCE:100.5
+    ACCESS_NUMBER:123456789:79991234567
+    STATUS_OK:100001
 """
 
 import httpx
 import time
-from typing import Optional, Dict, List
+from typing import Optional, Dict, List, Any
 
 
 class SMSActivate:
-    """Клиент для SMS-Activate.org API."""
+    """Клиент для SMS-Activate совместимого API."""
 
-    BASE_URL = "https://api.sms-activate.org/stubs/handler_api.php"
+    # Базовый URL endpoint SMS-Activate v1.
+    # Настраивается через параметр ``base_url`` конструктора или
+    # ключ конфига ``sms.api_url``.
+    BASE_URL = "https://46.21.159.86/stubs/handler_api.php"
 
-    # Коды сервисов
+    # Сопоставление понятных имён сервисов с их короткими кодами.
+    # Актуальный список кодов можно получить через getServicesList().
+    # Значение, не найденное в словаре, передаётся в API как есть
+    # (считается, что это уже короткий код сервиса).
     SERVICES = {
-        "op": "Microsoft / Outlook",
-        "sc": "Snapchat",
-        "ap": "Apple",
-        "go": "Google",
-        "tg": "Telegram",
-        "wa": "WhatsApp",
-        "vk": "VK",
-        "ok": "Одноклассники",
-        "fb": "Facebook",
-        "ig": "Instagram"
-    }
-
-    # Коды стран
-    COUNTRIES = {
-        0: "Россия",
-        1: "Украина",
-        2: "Казахстан",
-        3: "Беларусь",
-        4: "США",
-        5: "Германия",
-        6: "Польша",
-        7: "Турция",
-        8: "Индия",
-        9: "Китай"
+        "Microsoft": "mm",
+        "Outlook": "mm",
+        "Snapchat": "sf",
+        "Apple": "at",
+        "Google": "go",
+        "Telegram": "tg",
+        "WhatsApp": "wa",
+        "VK": "vk",
+        "Facebook": "fb",
+        "Instagram": "ig",
     }
 
     def __init__(
             self,
             api_key: str,
-            service_code: str = "op",
-            country: int = 0,
-            timeout: int = 20
+            service: str = "Microsoft",
+            country: str = "all",
+            max_price: float = 0,
+            operator: str = "",
+            timeout: int = 20,
+            proxy_manager = None,
+            base_url: Optional[str] = None,
+            verify_ssl: bool = False
     ):
         """
         Инициализация клиента.
 
         Args:
-            api_key: API-ключ от sms-activate.org
-            service_code: Код сервиса (op, sc, ap и т.д.)
-            country: Код страны (0 = Россия)
+            api_key: API-ключ SMS-провайдера (SMS-Activate совместимый)
+            service: Название сервиса (Microsoft, Google и т.д.)
+            country: Код страны (all, RU, US, UA и т.д.)
+            max_price: Максимальная цена за номер (0 = без лимита)
+            operator: Номер оператора (пусто = любой)
             timeout: Таймаут HTTP-запросов (сек)
+            proxy_manager: ProxyManager для ротации прокси
+            base_url: URL endpoint (по умолчанию BASE_URL)
+            verify_ssl: Проверять SSL-сертификат (False — для хостов
+                с самоподписанным сертификатом, напр. по IP-адресу)
         """
         self.api_key = api_key
-        self.service_code = service_code
+        self.service = service
         self.country = country
+        self.max_price = max_price
+        self.operator = operator
         self.timeout = timeout
+        self.proxy_manager = proxy_manager
+        self.base_url = base_url or self.BASE_URL
+        self.verify_ssl = verify_ssl
 
     # ============================================
     # ВНУТРЕННИЕ МЕТОДЫ
     # ============================================
 
-    def _request(self, params: dict) -> str:
+    def _request(self, action: str, params: Optional[dict] = None) -> Optional[str]:
         """
-        Выполнить GET-запрос к API.
+        Выполнить GET-запрос к SMS-Activate совместимому API.
 
         Args:
-            params: Параметры запроса
+            action: Действие (getBalance, getNumber, getStatus, ...)
+            params: Дополнительные query-параметры
 
         Returns:
-            Текстовый ответ
+            Сырой текст ответа или None при ошибке
         """
-        params["api_key"] = self.api_key
+        query = {"action": action, "api_key": self.api_key}
+        if params:
+            query.update(params)
+
+        # Прокси (httpx 0.28 принимает одиночный URL в proxy=)
+        proxy_url = None
+        if self.proxy_manager:
+            proxy_dict = self.proxy_manager.get_requests_proxy()
+            if proxy_dict:
+                proxy_url = proxy_dict.get("https") or proxy_dict.get("http")
 
         try:
-            response = httpx.get(
-                self.BASE_URL,
-                params=params,
-                timeout=self.timeout
-            )
-            return response.text.strip()
+            with httpx.Client(proxy=proxy_url, verify=self.verify_ssl) as client:
+                response = client.get(self.base_url, params=query, timeout=self.timeout)
+                response.raise_for_status()
+                return response.text
         except httpx.TimeoutException:
             from .logger import log
-            log.error("Таймаут при запросе к SMS-Activate")
-            return "ERROR: TIMEOUT"
+            log.error("Таймаут при запросе к SMS-API")
+            return None
         except httpx.ConnectError:
             from .logger import log
-            log.error("Ошибка соединения с SMS-Activate")
-            return "ERROR: CONNECT"
+            log.error("Ошибка соединения с SMS-API")
+            return None
         except httpx.HTTPStatusError as e:
             from .logger import log
-            log.error(f"HTTP ошибка: {e.response.status_code}")
-            return f"ERROR: HTTP {e.response.status_code}"
+            body = ""
+            try:
+                body = e.response.text
+            except Exception:
+                pass
+            log.error(f"HTTP ошибка {e.response.status_code}: {body[:200]}")
+            return None
         except Exception as e:
             from .logger import log
             log.error(f"Исключение при запросе: {e}")
-            return f"ERROR: {e}"
+            return None
+
+    def _request_json(self, action: str, params: Optional[dict] = None) -> Any:
+        """Выполнить запрос и разобрать JSON-ответ."""
+        import json
+
+        text = self._request(action, params)
+        if text is None:
+            return None
+
+        try:
+            return json.loads(text)
+        except json.JSONDecodeError:
+            from .logger import log
+            log.error(f"Некорректный JSON-ответ ({action}): {text[:200]}")
+            return None
+
+    def _resolve_service(self, service: str) -> str:
+        """
+        Преобразовать понятное имя сервиса в его короткий код.
+        Неизвестное значение передаётся как есть (предполагается, что
+        это уже корректный код сервиса).
+        """
+        return self.SERVICES.get(service, service)
 
     # ============================================
     # БАЛАНС
@@ -111,54 +165,55 @@ class SMSActivate:
         Получить баланс аккаунта.
 
         Returns:
-            Баланс в рублях или None при ошибке
+            Баланс или None при ошибке
         """
-        data = self._request({"action": "getBalance"})
+        from .logger import log
 
-        if "ACCESS_BALANCE" in data:
+        text = self._request("getBalance")
+        if not text:
+            return None
+
+        # Формат ответа: ACCESS_BALANCE:100.5
+        if text.startswith("ACCESS_BALANCE:"):
             try:
-                balance_str = data.split(":")[1]
-                return float(balance_str)
+                return float(text.split(":", 1)[1])
             except (ValueError, IndexError):
-                from .logger import log
-                log.error(f"Неверный формат баланса: {data}")
+                log.error(f"Не удалось разобрать баланс: {text}")
                 return None
 
-        elif "BAD_KEY" in data:
-            from .logger import log
-            log.error("Неверный API-ключ")
-            return None
+        log.error(f"Ошибка получения баланса: {text}")
+        return None
 
-        elif "ERROR_SQL" in data:
-            from .logger import log
-            log.error("Ошибка SQL на стороне SMS-Activate")
-            return None
+    # ============================================
+    # СПИСОК СТРАН
+    # ============================================
 
-        else:
-            from .logger import log
-            log.error(f"Неизвестный ответ при запросе баланса: {data}")
-            return None
-
-    def get_balance_and_cashback(self) -> Optional[Dict]:
+    def get_countries(self) -> Optional[List[Dict]]:
         """
-        Получить баланс и кэшбек.
+        Получить список доступных стран.
 
         Returns:
-            {"balance": float, "cashback": float} или None
+            Список стран или None
         """
-        data = self._request({"action": "getBalanceAndCashBack"})
+        data = self._request_json("getCountries")
+        if isinstance(data, list):
+            return data
+        return None
 
-        if "ACCESS_BALANCE" in data:
-            try:
-                # Формат: ACCESS_BALANCE:100.00:5.00
-                parts = data.split(":")
-                return {
-                    "balance": float(parts[1]),
-                    "cashback": float(parts[2]) if len(parts) > 2 else 0.0
-                }
-            except (ValueError, IndexError):
-                return None
+    # ============================================
+    # СПИСОК СЕРВИСОВ
+    # ============================================
 
+    def get_services(self) -> Optional[List[Dict]]:
+        """
+        Получить список доступных сервисов.
+
+        Returns:
+            Список сервисов или None
+        """
+        data = self._request_json("getServicesList")
+        if isinstance(data, dict) and data.get("status") == "success":
+            return data.get("services", [])
         return None
 
     # ============================================
@@ -167,115 +222,96 @@ class SMSActivate:
 
     def rent_number(
             self,
-            country: Optional[int] = None,
-            service_code: Optional[str] = None,
+            service: Optional[str] = None,
+            country: Optional[str] = None,
+            max_price: Optional[float] = None,
+            operator: Optional[str] = None,
             max_retries: int = 3
     ) -> Optional[Dict[str, str]]:
         """
         Арендовать номер.
 
         Args:
-            country: Код страны (если None — из конфига)
-            service_code: Код сервиса (если None — из конфига)
+            service: Сервис (Microsoft, Google и т.д.) или его короткий код
+            country: ID страны (число) или "all" (любая страна)
+            max_price: Максимальная цена (0 = без лимита)
+            operator: Оператор(ы) через запятую (пусто = любой)
             max_retries: Максимум попыток
 
         Returns:
             {"id": activation_id, "number": phone} или None
         """
+        from .logger import log
+
+        if service is None:
+            service = self.service
         if country is None:
             country = self.country
+        if max_price is None:
+            max_price = self.max_price
+        if operator is None:
+            operator = self.operator
 
-        if service_code is None:
-            service_code = self.service_code
+        service_code = self._resolve_service(service)
 
         for attempt in range(max_retries):
-            data = self._request({
-                "action": "getNumber",
-                "service": service_code,
-                "country": country
-            })
+            params = {"service": service_code}
+            if country and str(country).lower() != "all":
+                params["country"] = country
+            if max_price and max_price > 0:
+                params["maxPrice"] = max_price
+            if operator:
+                params["operator"] = operator
 
-            if "ACCESS_NUMBER" in data:
-                parts = data.split(":")
+            text = self._request("getNumber", params)
+
+            if text is None:
+                time.sleep(2)
+                continue
+
+            # Успех: ACCESS_NUMBER:<id>:<phone>
+            if text.startswith("ACCESS_NUMBER:"):
+                parts = text.split(":")
                 if len(parts) >= 3:
                     return {
                         "id": parts[1],
                         "number": parts[2]
                     }
+                log.error(f"Неожиданный формат номера: {text}")
+                return None
 
-            elif "NO_NUMBERS" in data:
-                from .logger import log
+            if text == "NO_NUMBERS":
                 log.warning(f"Нет номеров (попытка {attempt + 1}/{max_retries})")
                 if attempt < max_retries - 1:
                     time.sleep(15)
                 continue
-
-            elif "NO_BALANCE" in data:
-                from .logger import log
+            elif text == "NO_BALANCE":
                 log.error("Недостаточно средств")
                 return None
-
-            elif "BAD_KEY" in data:
-                from .logger import log
+            elif text == "BAD_KEY":
                 log.error("Неверный API-ключ")
                 return None
-
-            elif "BANNED" in data:
-                from .logger import log
-                log.error("Аккаунт забанен")
+            elif text == "BAD_SERVICE":
+                log.error(f"Неверный сервис: {service}")
                 return None
-
-            elif "WRONG_SERVICE" in data:
-                from .logger import log
-                log.error(f"Неверный сервис: {service_code}")
+            elif text == "BAD_ACTION":
+                log.error(f"Неверное действие: {text}")
                 return None
-
+            elif text.startswith("WRONG_MAX_PRICE:"):
+                log.error(f"Максимальная цена ниже допустимой: {text}")
+                return None
+            elif text.startswith("BANNED"):
+                log.error(f"Аккаунт заблокирован: {text}")
+                return None
             else:
-                from .logger import log
-                log.error(f"Неизвестный ответ: {data}")
-                time.sleep(5)
+                log.error(f"Неизвестный ответ getNumber: {text}")
 
-        return None
-
-    def rent_number_with_forward(
-            self,
-            forward_number: str,
-            country: Optional[int] = None,
-            service_code: Optional[str] = None
-    ) -> Optional[Dict[str, str]]:
-        """
-        Арендовать номер с переадресацией.
-
-        Args:
-            forward_number: Номер для переадресации
-            country: Код страны
-            service_code: Код сервиса
-
-        Returns:
-            {"id": ..., "number": ...} или None
-        """
-        if country is None:
-            country = self.country
-        if service_code is None:
-            service_code = self.service_code
-
-        data = self._request({
-            "action": "getNumber",
-            "service": service_code,
-            "country": country,
-            "forward": 1,
-            "phone": forward_number
-        })
-
-        if "ACCESS_NUMBER" in data:
-            parts = data.split(":")
-            if len(parts) >= 3:
-                return {"id": parts[1], "number": parts[2]}
+            time.sleep(2)
 
         return None
 
     # ============================================
-    # ОЖИДАНИЕ КОДА
+    # ПОЛУЧЕНИЕ КОДА
     # ============================================
 
     def wait_code(
@@ -302,33 +338,31 @@ class SMSActivate:
 
         while time.time() - start < timeout:
             attempts += 1
-            data = self._request({
-                "action": "getStatus",
-                "id": activation_id
-            })
+            text = self._request("getStatus", {"id": activation_id})
 
-            if "STATUS_OK" in data:
-                parts = data.split(":")
-                if len(parts) >= 2:
-                    log.success(f"SMS получен за {attempts} попыток")
-                    return parts[1]
-
-            elif "STATUS_CANCEL" in data:
-                log.warning("Аренда отменена сервисом")
-                return None
-
-            elif "STATUS_WAIT_CODE" in data:
-                # Ещё ждём — это норма
-                pass
-
-            elif "STATUS_WAIT_RETRY" in data:
-                log.debug("Ожидание повторной отправки SMS")
-
-            elif "STATUS_WAIT_RESEND" in data:
-                log.debug("Ожидание переотправки")
-
-            elif "STATUS_OK" not in data and "STATUS" not in data:
-                log.warning(f"Неизвестный ответ: {data}")
+            if text:
+                if text.startswith("STATUS_OK:"):
+                    code = text.split(":", 1)[1]
+                    if code:
+                        log.success(f"SMS получен за {attempts} попыток")
+                        return code
+                elif text == "STATUS_CANCEL":
+                    log.warning("Аренда отменена сервисом")
+                    return None
+                elif text == "STATUS_WAIT_CODE":
+                    pass  # Ещё ждём — это норма
+                elif text.startswith("STATUS_WAIT_RETRY"):
+                    pass  # Ждём уточняющего кода
+                elif text == "STATUS_WAIT_RESEND":
+                    pass  # Ждём повторной отправки
+                elif text == "NO_ACTIVATION":
+                    log.warning("ID активации не существует")
+                    return None
+                elif text == "BAD_KEY":
+                    log.error("Неверный API-ключ")
+                    return None
+                else:
+                    log.warning(f"Неизвестный статус: {text}")
 
             time.sleep(poll_interval)
 
@@ -345,16 +379,11 @@ class SMSActivate:
         Returns:
             Код или None
         """
-        data = self._request({
-            "action": "getStatus",
-            "id": activation_id
-        })
-
-        if "STATUS_OK" in data:
-            parts = data.split(":")
-            if len(parts) >= 2:
-                return parts[1]
-
+        text = self._request("getStatus", {"id": activation_id})
+        if text and text.startswith("STATUS_OK:"):
+            code = text.split(":", 1)[1]
+            if code:
+                return code
         return None
 
     # ============================================
@@ -363,91 +392,56 @@ class SMSActivate:
 
     def confirm(self, activation_id: str):
         """
-        Подтвердить успешную активацию (status=6).
+        Подтвердить успешную активацию (завершить аренду).
 
         Args:
             activation_id: ID активации
         """
-        data = self._request({
-            "action": "setStatus",
-            "id": activation_id,
-            "status": 6
-        })
-
         from .logger import log
-        if "ACCESS_ACTIVATION" in data:
+
+        # status=6 — завершить активацию (код получен и подтверждён)
+        text = self._request("setStatus", {"id": activation_id, "status": 6})
+
+        if text == "ACCESS_ACTIVATION":
             log.debug(f"Активация {activation_id} подтверждена")
+        elif text == "NO_ACTIVATION":
+            log.warning(f"Активация {activation_id} не найдена")
         else:
-            log.warning(f"Не удалось подтвердить {activation_id}: {data}")
+            log.warning(f"Не удалось подтвердить {activation_id}: {text}")
 
     def cancel(self, activation_id: str):
         """
-        Отменить аренду (status=8).
+        Отменить аренду.
 
         Args:
             activation_id: ID активации
         """
-        data = self._request({
-            "action": "setStatus",
-            "id": activation_id,
-            "status": 8
-        })
-
         from .logger import log
-        if "ACCESS_CANCEL" in data or "ACCESS_ACTIVATION" in data:
+
+        # status=8 — отменить активацию (вернуть деньги)
+        text = self._request("setStatus", {"id": activation_id, "status": 8})
+
+        if text == "ACCESS_CANCEL":
             log.debug(f"Активация {activation_id} отменена")
+        elif text == "EARLY_CANCEL_DENIED":
+            log.warning(f"Нельзя отменить {activation_id} в первые 2 минуты")
+        elif text == "NO_ACTIVATION":
+            log.warning(f"Активация {activation_id} не найдена")
         else:
-            log.warning(f"Не удалось отменить {activation_id}: {data}")
+            log.warning(f"Не удалось отменить {activation_id}: {text}")
 
     def report_bad_number(self, activation_id: str):
         """
-        Пожаловаться на номер (status=3).
+        Пожаловаться на номер.
+
+        В SMS-Activate совместимом API нет отдельного действия «плохой
+        номер», поэтому выполняем отмену активации (status=8) — это
+        возвращает средства.
 
         Args:
             activation_id: ID активации
         """
-        self._request({
-            "action": "setStatus",
-            "id": activation_id,
-            "status": 3
-        })
-
-    def resend_sms(self, activation_id: str) -> bool:
-        """
-        Запросить повторную отправку SMS.
-
-        Args:
-            activation_id: ID активации
-
-        Returns:
-            True если запрос принят
-        """
-        data = self._request({
-            "action": "setStatus",
-            "id": activation_id,
-            "status": 10
-        })
-        return "ACCESS" in data
-
-    # ============================================
-    # СПРАВОЧНАЯ ИНФОРМАЦИЯ
-    # ============================================
-
-    def get_countries(self) -> Dict[int, str]:
-        """Получить список стран."""
-        return self.COUNTRIES.copy()
-
-    def get_services(self) -> Dict[str, str]:
-        """Получить список сервисов."""
-        return self.SERVICES.copy()
-
-    def get_service_name(self, code: str) -> str:
-        """Получить название сервиса по коду."""
-        return self.SERVICES.get(code, code)
-
-    def get_country_name(self, code: int) -> str:
-        """Получить название страны по коду."""
-        return self.COUNTRIES.get(code, str(code))
+        self.cancel(activation_id)
 
     # ============================================
     # СТАТИСТИКА АККАУНТА
@@ -460,22 +454,11 @@ class SMSActivate:
         Returns:
             Список активаций
         """
-        data = self._request({"action": "getActiveActivations"})
-
-        # Формат: ACCESS_ACTIVATION:id:phone:service:date:status|id:phone:...
-        if "ACCESS_ACTIVATION" in data:
-            activations = []
-            parts = data.split(":")[1:]
-            # Простая парсинг, может отличаться
-            for i in range(0, len(parts), 5):
-                if i + 4 < len(parts):
-                    activations.append({
-                        "id": parts[i],
-                        "phone": parts[i + 1],
-                        "service": parts[i + 2],
-                        "date": parts[i + 3],
-                        "status": parts[i + 4]
-                    })
-            return activations
-
+        data = self._request_json("getActiveActivations")
+        if isinstance(data, dict):
+            items = data.get("data")
+            if isinstance(items, list):
+                return items
+        if isinstance(data, list):
+            return data
         return []

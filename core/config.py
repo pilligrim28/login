@@ -25,7 +25,7 @@ class Config:
         if not os.path.exists(self.path):
             raise FileNotFoundError(
                 f"Файл конфигурации '{self.path}' не найден.\n"
-                f"Создайте config.yaml на основе шаблона."
+                f"Скопируйте config.example.yaml в config.yaml и заполните значения."
             )
 
         with open(self.path, "r", encoding="utf-8") as f:

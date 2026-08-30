@@ -20,9 +20,18 @@ class Worker:
         self.db = Database(config)
         self.proxy_manager = ProxyManager(config)
         api_key = config.get("sms.api_key", "")
-        service_code = config.get("sms.service_code", "op")
-        country = config.get("sms.country", 0)
-        self.sms = SMSActivate(api_key, service_code, country)
+        base_url = config.get("sms.api_url", "")
+        service = config.get("sms.service", "Microsoft")
+        country = config.get("sms.country", "all")
+        max_price = config.get("sms.max_price", 0)
+        self.sms = SMSActivate(
+            api_key,
+            service=service,
+            country=country,
+            max_price=max_price,
+            base_url=base_url or None,
+            proxy_manager=self.proxy_manager
+        )
 
         # Для остановки
         self._stop_flag = threading.Event()
