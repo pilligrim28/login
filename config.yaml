@@ -1,0 +1,34 @@
+# ============================================================
+# MassReg — конфигурация
+# ============================================================
+
+sms:
+  api_key: "M1ndLabrTT_2"
+  api_url: "https://46.21.159.86/stubs/handler_api.php"
+  service: "Microsoft"
+  country: "all"
+  max_price: 0
+  max_sms_wait: 300
+
+proxy:
+  mode: "static"
+  enabled: false
+  type: "http"
+  proxies: []
+  rotation_url: ""
+  iproyal_api_key: ""
+  iproyal_country: "all"
+  iproyal_length: 30
+  dead_timeout: 300
+  strategy: "round-robin"
+
+worker:
+  threads: 5
+  total_registrations: 10
+  headless: true
+  retry_count: 3
+
+database:
+  type: "sqlite"
+  sqlite_path: "accounts.db"
+  postgres_url: ""
