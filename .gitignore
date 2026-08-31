@@ -1,24 +1,75 @@
 ```
-# Python
-__pycache__/
-*.pyc
-*.pyo
-*.pyd
+# Database files
+*.db
 
-# Logs and temp files
-*.log
-*.tmp
-
-# Environment
+# Environment files
 .env
 .env.local
 *.env.*
 
-# Editors
+# Logs and temporary files
+*.log
+*.tmp
+*.swp
+
+# Editors and IDEs
 .vscode/
 .idea/
 
+# Python specific
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.py~
+.Python
+*.so
+*.egg-info/
+
 # Dependencies
-.venv/
+node_modules/
 venv/
+.venv/
+pip-log.txt
+pipenv.lock
+requirements.txt.bak
+
+# Build and distribution
+dist/
+build/
+*.egg
+*.whl
+coverage/
+htmlcov/
+.coverage
+
+# OS generated files
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+
+# Compression and archives
+*.zip
+*.gz
+*.tar
+*.tgz
+*.bz2
+*.xz
+*.7z
+*.rar
+*.zst
+*.lz4
+*.lzh
+*.cab
+*.arj
+*.rpm
+*.deb
+*.Z
+*.lz
+*.lzo
+*.tar.gz
+*.tar.bz2
+*.tar.xz
+*.tar.zst
 ```
