@@ -17,7 +17,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from core.config import Config
 from core.logger import log
 from core.database import Database
-from core.sms import SMSActivate
+from core.partner_api import PartnerAPI
 from workers.worker import Worker
 
 
@@ -221,7 +221,7 @@ class MainWindow(QMainWindow):
         layout = QVBoxLayout()
 
         # SMS
-        sms_group = QGroupBox("SMS-сервис (SMS-Activate)")
+        sms_group = QGroupBox("SMS-сервис (Partner API)")
         sms_layout = QFormLayout()
 
         self.api_key_input = QLineEdit()
@@ -229,7 +229,8 @@ class MainWindow(QMainWindow):
         sms_layout.addRow("API-ключ:", self.api_key_input)
 
         self.service_combo = QComboBox()
-        self.service_combo.addItems(["Microsoft (op)", "Snapchat (sc)", "Apple (ap)"])
+        from core.services import list_services
+        self.service_combo.addItems(list_services().keys())
         sms_layout.addRow("Сервис:", self.service_combo)
 
         balance_btn = QPushButton("💳 Проверить баланс")
@@ -300,6 +301,12 @@ class MainWindow(QMainWindow):
         """Загрузить конфиг в UI."""
         self.api_key_input.setText(self.config.get("sms.api_key", ""))
 
+        # Выбираем текущий сервис в комбо
+        current_service = self.config.get("sms.service", "Microsoft")
+        idx = self.service_combo.findText(current_service)
+        if idx >= 0:
+            self.service_combo.setCurrentIndex(idx)
+
         proxies = self.config.get("proxy.proxies", [])
         rotation_url = self.config.get("proxy.rotation_url", "")
         proxy_lines = list(proxies)
@@ -319,6 +326,11 @@ class MainWindow(QMainWindow):
         """Сохранить настройки."""
         api_key = self.api_key_input.text().strip()
         self.config.set("sms.api_key", api_key)
+
+        # Сервис
+        self.config.set("sms.service", self.service_combo.currentText())
+        # Одиночный сервис заменяет список ротации
+        self.config.set("sms.services", [self.service_combo.currentText()])
 
         # Прокси
         proxy_lines = self.proxy_list_input.toPlainText().strip().split("\n")
@@ -355,12 +367,14 @@ class MainWindow(QMainWindow):
 
         from core.proxy_manager import ProxyManager
         pm = ProxyManager(self.config)
-        base_url = self.config.get("sms.api_url", "")
-        sms = SMSActivate(api_key, base_url=base_url or None, proxy_manager=pm)
+        base_url = self.config.get("sms.partner_url", "")
+        sms = PartnerAPI(api_key, base_url=base_url or None, proxy_manager=pm)
         balance = sms.get_balance()
         if balance is not None:
-            self.balance_label.setText(f"Баланс: {balance:.2f} ₽")
-            QMessageBox.information(self, "Баланс", f"Баланс: {balance:.2f} ₽")
+            usd = balance.get("usd", 0.0)
+            limit = balance.get("limit", 0.0)
+            self.balance_label.setText(f"Баланс: ${usd:.4f} (лимит ${limit:.4f})")
+            QMessageBox.information(self, "Баланс", f"Баланс: ${usd:.4f} (лимит ${limit:.4f})")
         else:
             self.balance_label.setText("Баланс: ошибка")
             QMessageBox.warning(self, "Ошибка", "Не удалось получить баланс")

@@ -51,6 +51,18 @@ class Database:
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS attempts (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    service TEXT,
+                    country TEXT,
+                    operator TEXT,
+                    proxy TEXT,
+                    success INTEGER DEFAULT 0,
+                    error TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
             conn.commit()
 
         from .logger import log
@@ -72,6 +84,18 @@ class Database:
                         cookies_path TEXT,
                         proxy TEXT,
                         status TEXT DEFAULT 'pending',
+                        error TEXT,
+                        created_at TIMESTAMP DEFAULT NOW()
+                    )
+                """)
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS attempts (
+                        id SERIAL PRIMARY KEY,
+                        service TEXT,
+                        country TEXT,
+                        operator TEXT,
+                        proxy TEXT,
+                        success INTEGER DEFAULT 0,
                         error TEXT,
                         created_at TIMESTAMP DEFAULT NOW()
                     )
@@ -142,6 +166,97 @@ class Database:
             from .logger import log
             log.error(f"Ошибка добавления аккаунта: {e}")
             return None
+
+    def add_attempt(
+            self,
+            service: str = "",
+            country: str = "",
+            operator: str = "",
+            proxy: str = "",
+            success: bool = False,
+            error: str = ""
+    ) -> Optional[int]:
+        """
+        Записать попытку регистрации для обучения ML-модели.
+
+        Args:
+            service: Имя сервиса (Microsoft, Google, ...).
+            country: Код страны номера (если известен).
+            operator: Имя оператора (если известно).
+            proxy: Использованный прокси.
+            success: Успешна ли регистрация.
+            error: Описание ошибки при неудаче.
+
+        Returns:
+            ID записи или None при ошибке.
+        """
+        try:
+            success_int = 1 if success else 0
+            if self.db_type == "sqlite":
+                with sqlite3.connect(self.sqlite_path) as conn:
+                    cur = conn.execute("""
+                        INSERT INTO attempts
+                        (service, country, operator, proxy, success, error)
+                        VALUES (?, ?, ?, ?, ?, ?)
+                    """, (service, country, operator, proxy, success_int, error))
+                    conn.commit()
+                    return cur.lastrowid
+            else:
+                import psycopg2
+                with psycopg2.connect(self.pg_url) as conn:
+                    with conn.cursor() as cur:
+                        cur.execute("""
+                            INSERT INTO attempts
+                            (service, country, operator, proxy, success, error)
+                            VALUES (%s, %s, %s, %s, %s, %s)
+                            RETURNING id
+                        """, (service, country, operator, proxy, success_int, error))
+                        conn.commit()
+                        result = cur.fetchone()
+                        return result[0] if result else None
+        except Exception as e:
+            from .logger import log
+            log.error(f"Ошибка добавления попытки: {e}")
+            return None
+
+    def get_attempts(self, limit: int = 0) -> List[Dict[str, Any]]:
+        """
+        Получить записи попыток для обучения ML-модели.
+
+        Args:
+            limit: Максимум записей (0 = все).
+
+        Returns:
+            Список словарей с данными попыток.
+        """
+        try:
+            if self.db_type == "sqlite":
+                with sqlite3.connect(self.sqlite_path) as conn:
+                    conn.row_factory = sqlite3.Row
+                    query = "SELECT * FROM attempts ORDER BY id DESC"
+                    if limit > 0:
+                        query += " LIMIT ?"
+                        cur = conn.execute(query, (limit,))
+                    else:
+                        cur = conn.execute(query)
+                    rows = cur.fetchall()
+                    return [dict(row) for row in rows]
+            else:
+                import psycopg2
+                import psycopg2.extras
+                with psycopg2.connect(self.pg_url) as conn:
+                    with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                        query = "SELECT * FROM attempts ORDER BY id DESC"
+                        if limit > 0:
+                            query += " LIMIT %s"
+                            cur.execute(query, (limit,))
+                        else:
+                            cur.execute(query)
+                        return cur.fetchall()
+        except Exception as e:
+            from .logger import log
+            log.error(f"Ошибка получения попыток: {e}")
+            return []
 
     # ============================================
     # ОБНОВЛЕНИЕ

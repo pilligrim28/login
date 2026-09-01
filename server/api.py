@@ -15,7 +15,7 @@ from contextlib import asynccontextmanager
 from core.config import Config
 from core.logger import log
 from core.database import Database
-from core.sms import SMSActivate
+from core.partner_api import PartnerAPI
 from workers.worker import Worker
 
 app = FastAPI(title="MassReg Server API", version="0.1.0")
@@ -77,8 +77,8 @@ async def get_balance():
     if not api_key:
         raise HTTPException(400, "API-ключ не настроен")
     pm = ProxyManager(config)
-    base_url = config.get("sms.api_url", "")
-    sms = SMSActivate(api_key, base_url=base_url or None, proxy_manager=pm)
+    base_url = config.get("sms.partner_url", "")
+    sms = PartnerAPI(api_key, base_url=base_url or None, proxy_manager=pm)
     balance = sms.get_balance()
     if balance is None:
         raise HTTPException(500, "Ошибка получения баланса")
@@ -89,6 +89,7 @@ async def get_balance():
 async def set_sms_config(sms_conf: SMSConfig):
     config.set("sms.api_key", sms_conf.api_key)
     config.set("sms.service", sms_conf.service)
+    config.set("sms.services", [sms_conf.service])
     config.set("sms.country", sms_conf.country)
     config.set("sms.max_price", sms_conf.max_price)
     config.save()
@@ -154,3 +155,30 @@ async def get_progress():
 async def get_accounts(limit: int = 100, offset: int = 0):
     accounts = db.get_all_accounts()
     return accounts[offset:offset + limit]
+
+
+@app.get("/ml/suggest")
+async def ml_suggest(top_k: int = 5):
+    """
+    Обученная ML-модель: топ комбинаций параметров (сервис/страна),
+    которые чаще дают успешную регистрацию.
+    """
+    from core.ml_model import get_model, record_to_features, find_opportunities
+
+    attempts = db.get_attempts()
+    if not attempts:
+        return {"attempts": 0, "suggestions": []}
+
+    model = get_model(config)
+    model.fit([(record_to_features(a), int(a.get("success", 0))) for a in attempts])
+    model.save()
+
+    opportunities = find_opportunities(model, attempts, top_k=top_k)
+    return {
+        "attempts": len(attempts),
+        "suggestions": [
+            {"probability": round(proba, 4), "service": opts.get("service"),
+             "country": opts.get("country")}
+            for proba, opts in opportunities
+        ],
+    }
