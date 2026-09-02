@@ -18,6 +18,7 @@ from core.config import Config
 from core.logger import log
 from core.database import Database
 from core.sms import SMSActivate
+from core.proxy_manager import ProxyManager
 from workers.worker import Worker
 
 
@@ -39,11 +40,19 @@ class WorkerThread(QThread):
 
 
 class MainWindow(QMainWindow):
-    """Главное окно десктопной версии."""
+    """
+    Главное окно десктопного приложения.
+    
+    Добавлено:
+    - Проверка баланса перед запуском
+    - Уведомления об ошибках
+    - Автоматическое обновление статистики
+    - Экспорт в CSV
+    """
 
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("MassReg Desktop — Массовая регистрация")
+        self.setWindowTitle("MassReg Desktop — Массовая регистрация аккаунтов")
         self.setGeometry(100, 100, 1000, 750)
 
         self.config = self._load_config()
@@ -56,16 +65,16 @@ class MainWindow(QMainWindow):
         self._refresh_accounts()
         self._refresh_stats()
 
-        # Таймер обновления статистики
+        # Таймер для обновления статистики
         self.stats_timer = QTimer()
         self.stats_timer.timeout.connect(self._refresh_stats)
-        self.stats_timer.start(3000)  # каждые 3 сек
+        self.stats_timer.start(3000)  # каждые 3 секунды
 
     def _load_config(self) -> Config:
         try:
             return Config("config.yaml")
         except FileNotFoundError:
-            # Создаём дефолтный
+            # Создаем дефолтный конфиг
             default = {
                 "sms": {"api_key": "", "api_url": "", "service": "Microsoft", "country": "all", "max_price": 0, "max_sms_wait": 300},
                 "proxy": {"enabled": False, "type": "http", "proxies": [], "rotation_url": ""},
@@ -93,9 +102,9 @@ class MainWindow(QMainWindow):
         self._init_logs_tab()
 
         self.tabs.addTab(self.dashboard_tab, "🚀 Дашборд")
-        self.tabs.addTab(self.accounts_tab, "📦 Аккаунты")
+        self.tabs.addTab(self.accounts_tab, "📋 Аккаунты")
         self.tabs.addTab(self.settings_tab, "⚙️ Настройки")
-        self.tabs.addTab(self.logs_tab, "📋 Логи")
+        self.tabs.addTab(self.logs_tab, "📊 Логи")
 
     def _init_dashboard(self):
         layout = QVBoxLayout()
@@ -111,9 +120,9 @@ class MainWindow(QMainWindow):
         stats_layout = QHBoxLayout()
 
         self.stat_total = QLabel("Всего: 0")
-        self.stat_success = QLabel("Успешно: 0")
-        self.stat_failed = QLabel("Неудачно: 0")
-        self.stat_success_rate = QLabel("Процент: 0%")
+        self.stat_success = QLabel("✅ Успешно: 0")
+        self.stat_failed = QLabel("❌ Неудачно: 0")
+        self.stat_success_rate = QLabel("📊 Процент: 0%")
 
         for lbl in [self.stat_total, self.stat_success, self.stat_failed, self.stat_success_rate]:
             lbl.setFont(QFont("Arial", 14))
@@ -176,11 +185,11 @@ class MainWindow(QMainWindow):
 
         layout.addLayout(btn_layout)
 
-        # Прогресс
+        # Прогресс-бар
         self.progress_bar = QProgressBar()
         self.progress_bar.setMinimum(0)
         self.progress_bar.setValue(0)
-        self.progress_bar.setFormat("%v / %m")
+        self.progress_bar.setFormat("%v / %m (%p%)")
         layout.addWidget(self.progress_bar)
 
         layout.addStretch()
@@ -189,7 +198,7 @@ class MainWindow(QMainWindow):
     def _init_accounts_tab(self):
         layout = QVBoxLayout()
 
-        # Таблица
+        # Таблица аккаунтов
         self.accounts_table = QTableWidget()
         self.accounts_table.setColumnCount(6)
         self.accounts_table.setHorizontalHeaderLabels([
@@ -225,18 +234,29 @@ class MainWindow(QMainWindow):
         sms_layout = QFormLayout()
 
         self.api_key_input = QLineEdit()
-        self.api_key_input.setPlaceholderText("API-ключ")
+        self.api_key_input.setPlaceholderText("API-ключ от SMS-Activate")
         sms_layout.addRow("API-ключ:", self.api_key_input)
 
         self.service_combo = QComboBox()
         self.service_combo.addItems(["Microsoft (op)", "Snapchat (sc)", "Apple (ap)"])
         sms_layout.addRow("Сервис:", self.service_combo)
 
-        balance_btn = QPushButton("💳 Проверить баланс")
+        self.country_input = QLineEdit()
+        self.country_input.setPlaceholderText("all, RU, US, UA...")
+        self.country_input.setText("all")
+        sms_layout.addRow("Страна:", self.country_input)
+
+        self.max_price_input = QLineEdit()
+        self.max_price_input.setPlaceholderText("0 = без лимита")
+        self.max_price_input.setText("0")
+        sms_layout.addRow("Макс. цена:", self.max_price_input)
+
+        balance_btn = QPushButton("💰 Проверить баланс")
         balance_btn.clicked.connect(self._check_balance)
         sms_layout.addRow("", balance_btn)
 
         self.balance_label = QLabel("Баланс: —")
+        self.balance_label.setFont(QFont("Arial", 12))
         sms_layout.addRow("", self.balance_label)
 
         sms_group.setLayout(sms_layout)
@@ -257,7 +277,8 @@ class MainWindow(QMainWindow):
         self.proxy_list_input = QTextEdit()
         self.proxy_list_input.setPlaceholderText(
             "Прокси (по одному на строку):\nhost:port:username:password\n"
-            "или один rotation URL"
+            "или просто host:port\n"
+            "или rotation URL"
         )
         self.proxy_list_input.setMaximumHeight(120)
         proxy_form.addRow("Список:", self.proxy_list_input)
@@ -290,15 +311,17 @@ class MainWindow(QMainWindow):
         """)
         layout.addWidget(self.logs_text)
 
-        clear_btn = QPushButton("🗑️ Очистить")
+        clear_btn = QPushButton("🧹 Очистить")
         clear_btn.clicked.connect(self.logs_text.clear)
         layout.addWidget(clear_btn)
 
         self.logs_tab.setLayout(layout)
 
     def _load_config_to_ui(self):
-        """Загрузить конфиг в UI."""
+        """Загрузить конфигурацию в UI."""
         self.api_key_input.setText(self.config.get("sms.api_key", ""))
+        self.country_input.setText(self.config.get("sms.country", "all"))
+        self.max_price_input.setText(str(self.config.get("sms.max_price", 0)))
 
         proxies = self.config.get("proxy.proxies", [])
         rotation_url = self.config.get("proxy.rotation_url", "")
@@ -319,6 +342,8 @@ class MainWindow(QMainWindow):
         """Сохранить настройки."""
         api_key = self.api_key_input.text().strip()
         self.config.set("sms.api_key", api_key)
+        self.config.set("sms.country", self.country_input.text().strip())
+        self.config.set("sms.max_price", float(self.max_price_input.text().strip() or 0))
 
         # Прокси
         proxy_lines = self.proxy_list_input.toPlainText().strip().split("\n")
@@ -347,10 +372,10 @@ class MainWindow(QMainWindow):
         log.info("Настройки сохранены")
 
     def _check_balance(self):
-        """Проверить баланс."""
+        """Проверить баланс SMS-Activate."""
         api_key = self.api_key_input.text().strip()
         if not api_key:
-            QMessageBox.warning(self, "Ошибка", "Введите API-ключ!")
+            QMessageBox.warning(self, "Ошибка", "Укажите API-ключ!")
             return
 
         from core.proxy_manager import ProxyManager
@@ -368,20 +393,39 @@ class MainWindow(QMainWindow):
     def _start_worker(self):
         """Запустить воркер."""
         if not self.api_key_input.text().strip():
-            QMessageBox.warning(self, "Ошибка", "Введите API-ключ в настройках!")
-            self.tabs.setCurrentIndex(2)  # Переключить на настройки
+            QMessageBox.warning(self, "Ошибка", "Укажите API-ключ в настройках!")
+            self.tabs.setCurrentIndex(2)  # Переключиться на настройки
             return
 
         # Сохраняем настройки
         self._save_settings()
 
-        # Перезагружаем конфиг
+        # Перезагружаем конфигурацию
         self.config = self._load_config()
 
-        # Создаём воркер
+        # Проверяем баланс
+        from core.proxy_manager import ProxyManager
+        from core.sms import SMSActivate
+        pm = ProxyManager(self.config)
+        base_url = self.config.get("sms.api_url", "")
+        api_key = self.config.get("sms.api_key", "")
+        sms = SMSActivate(api_key, base_url=base_url or None, proxy_manager=pm)
+        balance = sms.get_balance()
+        
+        if balance is None:
+            QMessageBox.warning(self, "Ошибка", "Не удалось проверить баланс SMS-Activate!")
+            return
+        
+        if balance < 20:
+            QMessageBox.warning(self, "Предупреждение", 
+                              f"Недостаточно средств: {balance:.2f} ₽\n"
+                              f"Для регистрации нужно минимум 20 ₽")
+            return
+
+        # Создаем воркер
         self.worker = Worker(self.config)
 
-        # Создаём поток
+        # Создаем поток
         self.worker_thread = WorkerThread(self.worker)
         self.worker_thread.progress.connect(self._on_progress)
         self.worker_thread.log_message.connect(self._on_log)
@@ -405,17 +449,17 @@ class MainWindow(QMainWindow):
             self._append_log("⏹ Остановка...")
 
     def _on_progress(self, done, total, success, failed):
-        """Обновить прогресс."""
+        """Обработка прогресса."""
         self.progress_bar.setMaximum(total)
         self.progress_bar.setValue(done)
         self._refresh_stats()
 
     def _on_log(self, message):
-        """Добавить лог."""
+        """Обработка лога."""
         self._append_log(message)
 
     def _on_finished(self):
-        """По завершении."""
+        """Обработка завершения."""
         self.start_btn.setEnabled(True)
         self.stop_btn.setEnabled(False)
         self._refresh_accounts()
@@ -424,7 +468,7 @@ class MainWindow(QMainWindow):
         QMessageBox.information(self, "Готово", "Регистрация завершена!")
 
     def _append_log(self, message):
-        """Добавить строку в лог."""
+        """Добавить сообщение в лог."""
         timestamp = datetime.now().strftime("%H:%M:%S")
         self.logs_text.append(f"[{timestamp}] {message}")
         # Автопрокрутка
@@ -475,7 +519,7 @@ class MainWindow(QMainWindow):
         """Экспорт в CSV."""
         accounts = self.db.get_all_accounts()
         if not accounts:
-            QMessageBox.warning(self, "Пусто", "Нет аккаунтов")
+            QMessageBox.warning(self, "Пусто", "Нет аккаунтов для экспорта")
             return
 
         file_path, _ = QFileDialog.getSaveFileName(

@@ -1,10 +1,14 @@
 import logging
 import os
 from datetime import datetime
+from logging.handlers import RotatingFileHandler
 
 
 class Logger:
-    """Централизованное логирование."""
+    """
+    Централизованное логирование.
+    Поддержка ротации логов (макс. 5 файлов по 10MB).
+    """
 
     _instance = None
 
@@ -15,15 +19,20 @@ class Logger:
         return cls._instance
 
     def _init_logger(self):
-        """Инициализация логгера."""
+        """Инициализация логгера с ротацией файлов."""
         os.makedirs("logs", exist_ok=True)
 
         self.logger = logging.getLogger("MassReg")
         self.logger.setLevel(logging.INFO)
 
-        # Файловый handler
+        # Файловый handler с ротацией
         date_str = datetime.now().strftime("%Y-%m-%d")
-        fh = logging.FileHandler(f"logs/{date_str}.log", encoding="utf-8")
+        fh = RotatingFileHandler(
+            f"logs/{date_str}.log",
+            maxBytes=10*1024*1024,  # 10MB
+            backupCount=5,         # 5 резервных файлов
+            encoding="utf-8"
+        )
         fh.setLevel(logging.INFO)
 
         # Консольный handler

@@ -2,17 +2,19 @@
 """
 MassReg — Массовая регистрация аккаунтов
 =========================================
-CLI-версия для простого запуска без GUI.
+CLI-версия для запуска регистрации.
 
 Использование:
-    python main.py              # Запустить регистрацию
+    python main.py              # Запустить регистрацию (синхронно)
     python main.py --check      # Проверить настройки
     python main.py --config custom.yaml
+    python main.py --async      # Запустить в асинхронном режиме
 """
 
 import sys
 import argparse
 import os
+import asyncio
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -27,20 +29,20 @@ from workers.worker import Worker
 def banner():
     """Вывести баннер."""
     print("""
-    ╔══════════════════════════════════════════════╗
-    ║           MassReg v0.1 — Пилотный запуск       ║
-    ║       Массовая регистрация аккаунтов           ║
-    ║    Microsoft (Outlook) • SMS-Activate • Proxy  ║
-    ╚══════════════════════════════════════════════╝
+    ┌─────────────────────────────────────────────────────────────────┐
+    │           MassReg v0.1 — Пилотный запуск              │
+    │       Массовая регистрация аккаунтов Microsoft       │
+    │    Microsoft (Outlook) • SMS-Activate • Proxy         │
+    └─────────────────────────────────────────────────────────────────┘
     """)
 
 
 def check_setup(config: Config) -> bool:
     """
-    Проверить конфигурацию перед запуском.
+    Проверить настройки перед запуском.
 
     Returns:
-        True если всё настроено
+        True если все настройки корректны
     """
     log.info("=== Проверка конфигурации ===")
 
@@ -57,18 +59,18 @@ def check_setup(config: Config) -> bool:
     balance = sms.get_balance()
     if balance is not None:
         log.success(f"Баланс SMS-Activate: {balance:.2f} ₽")
-        estimated = balance / 20  # ~20 руб за номер
+        estimated = balance / 20  # ~20 ₽ за номер
         log.info(f"Примерно хватит на {int(estimated)} регистраций")
     else:
-        log.error("Не удалось проверить баланс. Проверьте API-ключ.")
+        log.error("Не удалось получить баланс. Проверьте API-ключ.")
         return False
 
     # Прокси
     if pm.has_proxies():
-        log.success(f"Прокси загружено: {len(pm.proxies)}")
+        log.success(f"Прокси загружены: {len(pm.proxies)}")
     else:
         log.warning("Прокси не настроены. Регистрация может не работать.")
-        log.warning("Добавьте прокси в config.yaml в разделе proxy.proxies")
+        log.warning("Добавьте прокси в config.yaml в поле proxy.proxies")
 
     # База данных
     db = Database(config)
@@ -85,6 +87,85 @@ def check_setup(config: Config) -> bool:
     return True
 
 
+async def async_check_setup(config: Config) -> bool:
+    """
+    Асинхронная проверка настроек.
+    """
+    log.info("=== Проверка конфигурации (асинхронно) ===")
+
+    # SMS
+    api_key = config.get("sms.api_key", "")
+    if not api_key or api_key == "ВАШ_API_КЛЮЧ":
+        log.error("API-ключ SMS не настроен.")
+        log.error("Откройте config.yaml и укажите ключ в поле sms.api_key")
+        return False
+
+    base_url = config.get("sms.api_url", "")
+    
+    from core.sms_async import AsyncSMSActivate
+    async with AsyncSMSActivate(api_key, base_url=base_url or None) as sms:
+        balance = await sms.get_balance()
+        if balance is not None:
+            log.success(f"Баланс SMS-Activate: {balance:.2f} ₽")
+            estimated = balance / 20
+            log.info(f"Примерно хватит на {int(estimated)} регистраций")
+        else:
+            log.error("Не удалось получить баланс. Проверьте API-ключ.")
+            return False
+
+    # Прокси
+    pm = ProxyManager(config)
+    if pm.has_proxies():
+        log.success(f"Прокси загружены: {len(pm.proxies)}")
+    else:
+        log.warning("Прокси не настроены. Регистрация может не работать.")
+
+    # База данных
+    db = Database(config)
+    stats = db.get_stats()
+    log.success(f"База данных: всего {stats['total']} аккаунтов, "
+                f"успешных {stats['success']}")
+
+    # Воркер
+    total = config.get("worker.total_registrations", 100)
+    threads = config.get("worker.threads", 10)
+    log.info(f"Параметры: {total} регистраций, {threads} потоков")
+
+    log.success("=== Конфигурация OK ===")
+    return True
+
+
+def run_sync(config: Config):
+    """Запустить синхронную регистрацию."""
+    if not check_setup(config):
+        log.error("Конфигурация неверна. Запустите с --check для диагностики.")
+        sys.exit(1)
+
+    worker = Worker(config)
+    try:
+        worker.run()
+    except KeyboardInterrupt:
+        log.warning("Прервано пользователем (Ctrl+C)")
+        worker.stop()
+        sys.exit(1)
+
+
+async def run_async(config: Config):
+    """Запустить асинхронную регистрацию."""
+    if not await async_check_setup(config):
+        log.error("Конфигурация неверна. Запустите с --check для диагностики.")
+        sys.exit(1)
+
+    from workers.async_worker import AsyncWorker
+    worker = AsyncWorker(config)
+    try:
+        await worker.run()
+    except KeyboardInterrupt:
+        log.warning("Прервано пользователем (Ctrl+C)")
+        worker.stop()
+        sys.exit(1)
+
+
 def main():
     """Точка входа."""
     parser = argparse.ArgumentParser(
@@ -94,11 +175,13 @@ def main():
                         help="Проверить настройки и выйти")
     parser.add_argument("--config", default="config.yaml",
                         help="Путь к файлу конфигурации")
+    parser.add_argument("--async", action="store_true", dest="async_mode",
+                        help="Использовать асинхронный режим")
     args = parser.parse_args()
 
     banner()
 
-    # Загрузка конфига
+    # Загрузка конфигурации
     try:
         config = Config(args.config)
     except FileNotFoundError:
@@ -108,22 +191,17 @@ def main():
 
     # Проверка
     if args.check:
-        ok = check_setup(config)
+        if args.async_mode:
+            ok = asyncio.run(async_check_setup(config))
+        else:
+            ok = check_setup(config)
         sys.exit(0 if ok else 1)
 
     # Запуск
-    if not check_setup(config):
-        log.error("Конфигурация неверна. Запустите с --check для диагностики.")
-        sys.exit(1)
-
-    worker = Worker(config)
-
-    try:
-        worker.run()
-    except KeyboardInterrupt:
-        log.warning("Прервано пользователем (Ctrl+C)")
-        worker.stop()
-        sys.exit(1)
+    if args.async_mode:
+        asyncio.run(run_async(config))
+    else:
+        run_sync(config)
 
 
 if __name__ == "__main__":

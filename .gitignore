@@ -1,17 +1,9 @@
-# Конфиденциальные данные — НЕ коммитить реальный config.yaml с ключами
-config.yaml
-
-# Артефакты выполнения
-accounts.db
-cookies/
-logs/
-*.log
-
-# Python
+*.pyc
 __pycache__/
-*.py[cod]
-*.egg-info/
-.venv/
-venv/
-build/
-dist/
+logs/*.log
+*.db
+cookies/*.json
+.test.db
+.pytest_cache/
+.DS_Store
+Thumbs.db

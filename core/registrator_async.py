@@ -1,12 +1,13 @@
 """
-Модуль регистрации аккаунтов Microsoft (Outlook).
+Асинхронный модуль регистрации аккаунтов Microsoft (Outlook).
 Использует Playwright для автоматизации браузера.
 
 Добавлено:
+- Полная асинхронность
 - Обработка CAPTCHA
-- Асинхронная работа
 - Проверка на дубликаты email
 - Улучшенная обработка ошибок
+- Поддержка отмены через asyncio.CancelledError
 """
 
 import asyncio
@@ -16,21 +17,21 @@ import random
 import string
 from typing import Optional, Dict, Callable, Tuple
 
-from playwright.async_api import async_playwright, Page, BrowserContext
+from playwright.async_api import async_playwright, Page, BrowserContext, Browser
 
 from .logger import log
-from .sms import SMSActivate
+from .sms_async import AsyncSMSActivate
 from .database import Database
 from .proxy_manager import ProxyManager
 
 
-class MicrosoftRegistrator:
+class AsyncMicrosoftRegistrator:
     """
-    Регистрация аккаунтов Microsoft (Outlook).
+    Асинхронная регистрация аккаунтов Microsoft (Outlook).
     
     Пример использования:
-        registrator = MicrosoftRegistrator(sms, db, proxy_manager, config)
-        result = await registrator.register()
+        async with AsyncMicrosoftRegistrator(sms, db, proxy_manager, config) as registrator:
+            result = await registrator.register()
     """
 
     SIGNUP_URL = "https://signup.live.com/signup"
@@ -45,7 +46,7 @@ class MicrosoftRegistrator:
 
     def __init__(
             self,
-            sms: SMSActivate,
+            sms: AsyncSMSActivate,
             db: Database,
             proxy_manager: ProxyManager,
             config,
@@ -56,7 +57,7 @@ class MicrosoftRegistrator:
         Инициализация регистратора.
 
         Args:
-            sms: Клиент SMS-Activate
+            sms: Асинхронный клиент SMS-Activate
             db: База данных
             proxy_manager: Менеджер прокси
             config: Конфигурация
@@ -69,6 +70,35 @@ class MicrosoftRegistrator:
         self.config = config
         self.on_status = on_status
         self.on_log = on_log
+        
+        self._browser = None
+        self._context = None
+        self._page = None
+        self._playwright = None
+
+    async def __aenter__(self):
+        """Асинхронный контекстный менеджер (вход)."""
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        """Асинхронный контекстный менеджер (выход)."""
+        await self._close_browser()
+
+    async def _close_browser(self):
+        """Закрыть браузер."""
+        if self._page:
+            await self._page.close()
+        if self._context:
+            await self._context.close()
+        if self._browser:
+            await self._browser.close()
+        if self._playwright:
+            await self._playwright.stop()
+        
+        self._page = None
+        self._context = None
+        self._browser = None
+        self._playwright = None
 
     # ============================================
     # КОЛБЭКИ
@@ -95,88 +125,59 @@ class MicrosoftRegistrator:
     # ============================================
 
     def generate_email(self) -> str:
-        """
-        Сгенерировать случайный email.
-
-        Returns:
-            Email вида name.surname123@outlook.com
-        """
+        """Сгенерировать случайный email."""
         first_names = [
             "alex", "maria", "ivan", "anna", "pavel", "elena",
             "sergey", "olga", "dmitry", "nina", "mikhail", "tanya",
             "andrey", "irina", "nikolay", "svetlana", "victor", "yulia"
         ]
-
         last_names = [
             "smirnov", "ivanov", "petrov", "sidorov", "kuznetsov",
             "popov", "volkov", "sokolov", "mikhailov", "novikov",
             "morozov", "fedorov", "orlov", "belov", "kiselev"
         ]
-
         first = random.choice(first_names)
         last = random.choice(last_names)
         digits = ''.join(random.choices(string.digits, k=random.randint(3, 5)))
-
         return f"{first}.{last}{digits}@outlook.com"
 
     def generate_password(self) -> str:
-        """
-        Сгенерировать надежный пароль.
-
-        Returns:
-            Пароль 14-18 символов
-        """
+        """Сгенерировать надежный пароль."""
         length = random.randint(14, 18)
         lower = string.ascii_lowercase
         upper = string.ascii_uppercase
         digits = string.digits
         special = "!@#$%^&*"
-
         password = [
             random.choice(lower),
             random.choice(upper),
             random.choice(digits),
             random.choice(special)
         ]
-
         all_chars = lower + upper + digits + special
         password.extend(random.choices(all_chars, k=length - 4))
         random.shuffle(password)
-
         return ''.join(password)
 
     def generate_name(self) -> Tuple[str, str]:
-        """
-        Сгенерировать имя и фамилию.
-
-        Returns:
-            (first_name, last_name)
-        """
+        """Сгенерировать имя и фамилию."""
         first_names = [
             "Алексей", "Мария", "Иван", "Анна", "Павел", "Елена",
             "Сергей", "Ольга", "Дмитрий", "Нина", "Михаил", "Таня",
             "Андрей", "Ирина", "Николай", "Светлана", "Виктор", "Юля"
         ]
-
         last_names = [
             "Смирнов", "Иванов", "Петров", "Сидоров", "Кузнецов",
             "Попов", "Волков", "Соколов", "Михайлов", "Новиков",
             "Морозов", "Федоров", "Орлов", "Белов", "Киселев"
         ]
-
         return random.choice(first_names), random.choice(last_names)
 
     def generate_birthdate(self) -> Tuple[str, str, str]:
-        """
-        Сгенерировать дату рождения (18-50 лет).
-
-        Returns:
-            (day, month, year) — строки
-        """
+        """Сгенерировать дату рождения."""
         year = random.randint(1975, 2007)
         month = random.randint(1, 12)
         day = random.randint(1, 28)
-
         return str(day), str(month), str(year)
 
     # ============================================
@@ -184,15 +185,7 @@ class MicrosoftRegistrator:
     # ============================================
 
     async def _check_captcha(self, page: Page) -> bool:
-        """
-        Проверить страницу на наличие CAPTCHA.
-
-        Args:
-            page: Страница Playwright
-
-        Returns:
-            True если CAPTCHA обнаружена
-        """
+        """Проверить страницу на наличие CAPTCHA."""
         try:
             # Проверка на наличие reCAPTCHA iframe
             try:
@@ -207,13 +200,8 @@ class MicrosoftRegistrator:
             page_content_lower = page_content.lower()
             
             captcha_indicators = [
-                "captcha",
-                "verify you are human",
-                "i'm not a robot",
-                "recaptcha",
-                "hcaptcha",
-                "prove you're human",
-                "security check",
+                "captcha", "verify you are human", "i'm not a robot",
+                "recaptcha", "hcaptcha", "prove you're human", "security check"
             ]
             
             if any(indicator in page_content_lower for indicator in captcha_indicators):
@@ -227,17 +215,8 @@ class MicrosoftRegistrator:
     # РАБОТА С БРАУЗЕРОМ
     # ============================================
 
-    async def _launch_browser(self, playwright, proxy: Optional[dict] = None) -> Tuple:
-        """
-        Запустить браузер с прокси.
-
-        Args:
-            playwright: Экземпляр playwright
-            proxy: Параметры прокси
-
-        Returns:
-            (browser, context)
-        """
+    async def _launch_browser(self, proxy: Optional[dict] = None) -> Tuple[Browser, BrowserContext]:
+        """Запустить браузер с прокси."""
         launch_options = {
             "headless": self.config.get("worker.headless", True),
             "args": [
@@ -255,9 +234,10 @@ class MicrosoftRegistrator:
                 launch_options["proxy"]["username"] = proxy["username"]
                 launch_options["proxy"]["password"] = proxy.get("password", "")
 
-        browser = await playwright.chromium.launch(**launch_options)
+        self._playwright = await async_playwright().start()
+        self._browser = await self._playwright.chromium.launch(**launch_options)
 
-        context = await browser.new_context(
+        self._context = await self._browser.new_context(
             viewport={"width": 1366, "height": 768},
             locale="ru-RU",
             timezone_id="Europe/Moscow",
@@ -268,20 +248,11 @@ class MicrosoftRegistrator:
             )
         )
 
-        return browser, context
+        return self._browser, self._context
 
     async def _click_next(self, page: Page) -> bool:
-        """
-        Нажать кнопку "Далее".
-
-        Args:
-            page: Страница Playwright
-
-        Returns:
-            True если клик успешен, False если CAPTCHA
-        """
+        """Нажать кнопку 'Далее'."""
         try:
-            # Проверка CAPTCHA перед кликом
             if await self._check_captcha(page):
                 self._callback_log("⚠️ Обнаружена CAPTCHA! Пожалуйста, решите её вручную.")
                 log.warning("Обнаружена CAPTCHA!")
@@ -298,31 +269,14 @@ class MicrosoftRegistrator:
             log.warning(f"Не удалось нажать Далее: {e}")
             return False
 
-    # ============================================
-    # СОХРАНЕНИЕ COOKIES
-    # ============================================
-
     async def _save_cookies(self, context: BrowserContext, email: str) -> str:
-        """
-        Сохранить cookies в файл.
-
-        Args:
-            context: Контекст браузера
-            email: Email аккаунта
-
-        Returns:
-            Путь к файлу cookies
-        """
+        """Сохранить cookies в файл."""
         os.makedirs("cookies", exist_ok=True)
-
         safe_email = email.replace("@", "_at_").replace(".", "_dot_")
         cookies_path = f"cookies/{safe_email}.json"
-
         cookies = await context.cookies()
-
         with open(cookies_path, "w", encoding="utf-8") as f:
             json.dump(cookies, f, ensure_ascii=False, indent=2)
-
         return cookies_path
 
     # ============================================
@@ -332,7 +286,7 @@ class MicrosoftRegistrator:
     async def register(self) -> Optional[Dict]:
         """
         Выполнить полный цикл регистрации.
-
+        
         Returns:
             {"email": ..., "password": ...} при успехе, None при неудаче
         """
@@ -361,7 +315,7 @@ class MicrosoftRegistrator:
 
         # 1. Аренда номера
         self._callback_status("renting_number", {"email": email})
-        number_data = self.sms.rent_number()
+        number_data = await self.sms.rent_number()
 
         if not number_data:
             self._callback_status("error", {"email": email, "error": "Не удалось арендовать номер"})
@@ -381,26 +335,23 @@ class MicrosoftRegistrator:
         # 2. Получаем прокси
         proxy = self.proxy_manager.get_next()
 
-        playwright = None
-        browser = None
-
         try:
-            playwright = await async_playwright().start()
-            browser, context = await self._launch_browser(playwright, proxy)
-            page = await context.new_page()
+            # 3. Запускаем браузер
+            await self._launch_browser(proxy)
+            self._page = await self._context.new_page()
 
-            # 3. Открываем страницу регистрации
+            # 4. Открываем страницу регистрации
             self._callback_status("opening_page", {"email": email})
-            await page.goto(
+            await self._page.goto(
                 self.SIGNUP_URL,
                 wait_until="networkidle",
                 timeout=45000
             )
 
             # Проверка CAPTCHA после загрузки страницы
-            if await self._check_captcha(page):
+            if await self._check_captcha(self._page):
                 self._callback_status("error", {"email": email, "error": "CAPTCHA на странице регистрации"})
-                self.sms.cancel(activation_id)
+                await self.sms.cancel(activation_id)
                 self.db.add_account(
                     email=email,
                     password=password,
@@ -408,72 +359,68 @@ class MicrosoftRegistrator:
                     status="error",
                     error="CAPTCHA на странице регистрации"
                 )
-                await browser.close()
                 return None
 
-            # 4. Заполняем email
+            # 5. Заполняем email
             self._callback_status("filling_email", {"email": email})
-            email_input = await page.wait_for_selector(
+            email_input = await self._page.wait_for_selector(
                 'input[name="MemberName"], input[type="email"]',
                 timeout=20000
             )
             await email_input.fill(email)
-            if not await self._click_next(page):
-                self.sms.cancel(activation_id)
-                await browser.close()
+            if not await self._click_next(self._page):
+                await self.sms.cancel(activation_id)
                 return None
 
-            # 5. Заполняем пароль
-            await page.wait_for_timeout(3000)
+            # 6. Заполняем пароль
+            await self._page.wait_for_timeout(3000)
             self._callback_status("filling_password", {"email": email})
-            password_input = await page.wait_for_selector(
+            password_input = await self._page.wait_for_selector(
                 'input[name="Password"], input[type="password"]',
                 timeout=20000
             )
             await password_input.fill(password)
-            if not await self._click_next(page):
-                self.sms.cancel(activation_id)
-                await browser.close()
+            if not await self._click_next(self._page):
+                await self.sms.cancel(activation_id)
                 return None
 
-            # 6. Заполняем имя и фамилию
-            await page.wait_for_timeout(3000)
+            # 7. Заполняем имя и фамилию
+            await self._page.wait_for_timeout(3000)
             self._callback_status("filling_name", {"email": email})
 
-            fn_input = await page.wait_for_selector(
+            fn_input = await self._page.wait_for_selector(
                 'input[name="FirstName"]',
                 timeout=20000
             )
             await fn_input.fill(first_name)
 
-            ln_input = await page.wait_for_selector(
+            ln_input = await self._page.wait_for_selector(
                 'input[name="LastName"]',
                 timeout=10000
             )
             await ln_input.fill(last_name)
-            if not await self._click_next(page):
-                self.sms.cancel(activation_id)
-                await browser.close()
+            if not await self._click_next(self._page):
+                await self.sms.cancel(activation_id)
                 return None
 
-            # 7. Дата рождения
-            await page.wait_for_timeout(3000)
+            # 8. Дата рождения
+            await self._page.wait_for_timeout(3000)
             self._callback_status("filling_birthdate", {"email": email})
 
             try:
-                day_select = await page.wait_for_selector(
+                day_select = await self._page.wait_for_selector(
                     'select[name="BirthDay"]',
                     timeout=10000
                 )
                 await day_select.select_option(day)
 
-                month_select = await page.wait_for_selector(
+                month_select = await self._page.wait_for_selector(
                     'select[name="BirthMonth"]',
                     timeout=5000
                 )
                 await month_select.select_option(month)
 
-                year_select = await page.wait_for_selector(
+                year_select = await self._page.wait_for_selector(
                     'select[name="BirthYear"]',
                     timeout=5000
                 )
@@ -482,34 +429,32 @@ class MicrosoftRegistrator:
                 self._callback_log(f"⚠️ Не удалось заполнить дату рождения: {e}")
                 log.warning(f"Дата рождения не заполнена: {e}")
 
-            if not await self._click_next(page):
-                self.sms.cancel(activation_id)
-                await browser.close()
+            if not await self._click_next(self._page):
+                await self.sms.cancel(activation_id)
                 return None
 
-            # 8. Номер телефона
-            await page.wait_for_timeout(3000)
+            # 9. Номер телефона
+            await self._page.wait_for_timeout(3000)
             self._callback_status("filling_phone", {"email": email, "phone": phone})
 
-            phone_input = await page.wait_for_selector(
+            phone_input = await self._page.wait_for_selector(
                 'input[name="PhoneNumber"], input[type="tel"]',
                 timeout=30000
             )
             await phone_input.fill(phone)
-            if not await self._click_next(page):
-                self.sms.cancel(activation_id)
-                await browser.close()
+            if not await self._click_next(self._page):
+                await self.sms.cancel(activation_id)
                 return None
 
-            # 9. Ожидание SMS
+            # 10. Ожидание SMS
             self._callback_status("waiting_sms", {"email": email, "phone": phone})
             self._callback_log(f"Ожидание SMS для {phone}...")
 
-            code = self.sms.wait_code(activation_id)
+            code = await self.sms.wait_code(activation_id)
 
             if not code:
                 self._callback_status("failed", {"email": email, "error": "SMS timeout"})
-                self.sms.cancel(activation_id)
+                await self.sms.cancel(activation_id)
                 self.db.add_account(
                     email=email,
                     password=password,
@@ -517,29 +462,27 @@ class MicrosoftRegistrator:
                     status="failed",
                     error="SMS timeout"
                 )
-                await browser.close()
                 return None
 
             self._callback_log(f"SMS-код получен")
 
-            # 10. Ввод кода
+            # 11. Ввод кода
             self._callback_status("entering_code", {"email": email})
 
-            code_input = await page.wait_for_selector(
+            code_input = await self._page.wait_for_selector(
                 'input[name="OtpCode"], input[type="text"]',
                 timeout=20000
             )
             await code_input.fill(code)
-            if not await self._click_next(page):
-                self.sms.cancel(activation_id)
-                await browser.close()
+            if not await self._click_next(self._page):
+                await self.sms.cancel(activation_id)
                 return None
 
-            # 11. Ожидание завершения
-            await page.wait_for_timeout(8000)
+            # 12. Ожидание завершения
+            await self._page.wait_for_timeout(8000)
 
-            # 12. Проверка успеха
-            current_url = page.url
+            # 13. Проверка успеха
+            current_url = self._page.url
             is_success = any(
                 domain in current_url
                 for domain in self.SUCCESS_DOMAINS
@@ -551,10 +494,10 @@ class MicrosoftRegistrator:
                 log.success(f"Регистрация успешна: {email}")
 
                 # Сохраняем cookies
-                cookies_path = await self._save_cookies(context, email)
+                cookies_path = await self._save_cookies(self._context, email)
 
                 # Подтверждаем номер
-                self.sms.confirm(activation_id)
+                await self.sms.confirm(activation_id)
 
                 # Сохраняем в базу
                 self.db.add_account(
@@ -566,7 +509,6 @@ class MicrosoftRegistrator:
                     status="success"
                 )
 
-                await browser.close()
                 return {"email": email, "password": password}
             else:
                 self._callback_status(
@@ -576,7 +518,7 @@ class MicrosoftRegistrator:
                 self._callback_log(f"❌ Неудача: {email}")
                 log.warning(f"Регистрация не удалась: {email} | URL: {current_url}")
 
-                self.sms.cancel(activation_id)
+                await self.sms.cancel(activation_id)
                 self.db.add_account(
                     email=email,
                     password=password,
@@ -585,30 +527,27 @@ class MicrosoftRegistrator:
                     error=f"Unexpected URL: {current_url}"
                 )
 
-                await browser.close()
                 return None
 
-        except asyncio.TimeoutError:
-            self._callback_status("error", {"email": email, "error": "Timeout"})
-            self._callback_log(f"❌ Таймаут: {email}")
-            log.error(f"Таймаут при регистрации {email}")
-            self.sms.cancel(activation_id)
+        except asyncio.CancelledError:
+            self._callback_status("error", {"email": email, "error": "Cancelled"})
+            self._callback_log(f"❌ Отменено: {email}")
+            log.warning(f"Регистрация отменена: {email}")
+            await self.sms.cancel(activation_id)
             self.db.add_account(
                 email=email,
                 password=password,
                 phone=phone,
                 status="error",
-                error="Timeout"
+                error="Cancelled"
             )
-            if browser:
-                await browser.close()
             return None
 
         except Exception as e:
             self._callback_status("error", {"email": email, "error": str(e)})
             self._callback_log(f"❌ Ошибка: {e}")
             log.error(f"Исключение при регистрации {email}: {e}")
-            self.sms.cancel(activation_id)
+            await self.sms.cancel(activation_id)
             self.db.add_account(
                 email=email,
                 password=password,
@@ -616,10 +555,7 @@ class MicrosoftRegistrator:
                 status="error",
                 error=str(e)
             )
-            if browser:
-                await browser.close()
             return None
 
         finally:
-            if playwright:
-                await playwright.stop()
+            await self._close_browser()

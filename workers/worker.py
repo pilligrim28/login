@@ -13,17 +13,27 @@ from core.registrator import MicrosoftRegistrator
 
 
 class Worker:
-    """Воркер для массовой регистрации."""
+    """
+    Воркер для массовой регистрации аккаунтов.
+    
+    Использует ThreadPoolExecutor для параллельной работы.
+    Добавлена:
+    - Проверка баланса перед каждой регистрацией
+    - Проверка на остановку
+    - Колбэки для отслеживания прогресса
+    """
 
     def __init__(self, config: Config):
         self.config = config
         self.db = Database(config)
         self.proxy_manager = ProxyManager(config)
+        
         api_key = config.get("sms.api_key", "")
         base_url = config.get("sms.api_url", "")
         service = config.get("sms.service", "Microsoft")
         country = config.get("sms.country", "all")
         max_price = config.get("sms.max_price", 0)
+        
         self.sms = SMSActivate(
             api_key,
             service=service,
@@ -48,7 +58,9 @@ class Worker:
         log.warning("Остановка запрошена...")
 
     def run(self):
-        """Запустить регистрацию (блокирующий вызов)."""
+        """
+        Запустить регистрацию (блокирующий вызов).
+        """
         self._stop_flag.clear()
 
         total = self.config.get("worker.total_registrations", 100)
@@ -62,6 +74,15 @@ class Worker:
             log.info(f"Баланс SMS-Activate: {balance} ₽")
         else:
             log.error("Не удалось получить баланс")
+            if self.on_finished:
+                self.on_finished()
+            return
+
+        # Минимальный баланс для одной регистрации (~20₽ за номер)
+        min_balance_per_registration = 20
+        
+        if balance is not None and balance < min_balance_per_registration:
+            log.error(f"Недостаточно средств: {balance:.2f}₽ (нужно минимум {min_balance_per_registration}₽)")
             if self.on_finished:
                 self.on_finished()
             return
@@ -101,7 +122,7 @@ class Worker:
                     log.info(f"Прогресс: {done_count}/{total} "
                              f"(успех: {success_count}, неудача: {fail_count})")
 
-        log.success(f"=== ЗАВЕРШЕНО: {success_count}/{total} успешно ===")
+        log.success(f"=== Завершено: {success_count}/{total} успешно ===")
 
         if self.on_finished:
             try:
@@ -110,8 +131,21 @@ class Worker:
                 pass
 
     def _register_one(self, index: int, total: int) -> Optional[Dict]:
-        """Один аккаунт (в потоке)."""
+        """
+        Зарегистрировать один аккаунт (в потоке).
+        """
         if self._stop_flag.is_set():
+            return None
+
+        # Проверка баланса перед каждой регистрацией
+        balance = self.sms.get_balance()
+        if balance is None:
+            log.error("Не удалось проверить баланс SMS-Activate")
+            return None
+
+        min_balance = 20  # ~20₽ за номер
+        if balance < min_balance:
+            log.warning(f"Недостаточно средств: {balance:.2f}₽ (нужно минимум {min_balance}₽)")
             return None
 
         registrator = MicrosoftRegistrator(
@@ -149,7 +183,7 @@ class Worker:
                 self.on_log(f"[{index}/{total}] ▶️ Начало: {email}")
 
     def _handle_log(self, message: str):
-        """Передать лог в GUI."""
+        """Передача лога в GUI."""
         if self.on_log:
             try:
                 self.on_log(message)
