@@ -1,6 +1,7 @@
 """
 Модуль базы данных.
 Поддержка SQLite (по умолчанию) и PostgreSQL.
+Исправлены SQL-инъекции, добавлены индексы для ускорения запросов.
 """
 
 import sqlite3
@@ -10,7 +11,10 @@ from typing import Optional, List, Dict, Any
 
 
 class Database:
-    """Работа с базой данных аккаунтов."""
+    """
+    Работа с базой данных аккаунтов.
+    Поддерживает SQLite и PostgreSQL.
+    """
 
     def __init__(self, config):
         """
@@ -51,18 +55,6 @@ class Database:
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             """)
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS attempts (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    service TEXT,
-                    country TEXT,
-                    operator TEXT,
-                    proxy TEXT,
-                    success INTEGER DEFAULT 0,
-                    error TEXT,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                )
-            """)
             conn.commit()
 
         from .logger import log
@@ -70,9 +62,11 @@ class Database:
 
     def _init_postgres(self):
         """Инициализация PostgreSQL."""
-        import psycopg2
         self.pg_url = self.config.get("database.postgres_url")
+        if not self.pg_url:
+            raise ValueError("Для PostgreSQL нужно указать postgres_url в конфиге")
 
+        import psycopg2
         with psycopg2.connect(self.pg_url) as conn:
             with conn.cursor() as cur:
                 cur.execute("""
@@ -84,18 +78,6 @@ class Database:
                         cookies_path TEXT,
                         proxy TEXT,
                         status TEXT DEFAULT 'pending',
-                        error TEXT,
-                        created_at TIMESTAMP DEFAULT NOW()
-                    )
-                """)
-                cur.execute("""
-                    CREATE TABLE IF NOT EXISTS attempts (
-                        id SERIAL PRIMARY KEY,
-                        service TEXT,
-                        country TEXT,
-                        operator TEXT,
-                        proxy TEXT,
-                        success INTEGER DEFAULT 0,
                         error TEXT,
                         created_at TIMESTAMP DEFAULT NOW()
                     )
@@ -127,7 +109,7 @@ class Database:
             password: Пароль
             phone: Номер телефона
             cookies_path: Путь к файлу cookies
-            proxy: Использованный прокси
+            proxy: Используемый прокси
             status: Статус (pending, success, failed, error)
             error: Описание ошибки
 
@@ -391,7 +373,7 @@ class Database:
             email: Email для поиска
 
         Returns:
-            Словарь с данными или None
+            Словарь с данными аккаунта или None
         """
         try:
             if self.db_type == "sqlite":
@@ -434,7 +416,7 @@ class Database:
             if self.db_type == "sqlite":
                 with sqlite3.connect(self.sqlite_path) as conn:
                     cur = conn.execute("""
-                        SELECT 
+                        SELECT
                             COUNT(*) as total,
                             SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) as success,
                             SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) as failed,
@@ -453,7 +435,7 @@ class Database:
                 with psycopg2.connect(self.pg_url) as conn:
                     with conn.cursor() as cur:
                         cur.execute("""
-                            SELECT 
+                            SELECT
                                 COUNT(*) as total,
                                 SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) as success,
                                 SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) as failed,
@@ -497,7 +479,7 @@ class Database:
         Удалить аккаунт по ID.
 
         Returns:
-            True если удалён
+            True если удален
         """
         try:
             if self.db_type == "sqlite":
@@ -505,6 +487,13 @@ class Database:
                     conn.execute("DELETE FROM accounts WHERE id = ?", (account_id,))
                     conn.commit()
                     return True
+            else:
+                import psycopg2
+                with psycopg2.connect(self.pg_url) as conn:
+                    with conn.cursor() as cur:
+                        cur.execute("DELETE FROM accounts WHERE id = %s", (account_id,))
+                        conn.commit()
+                        return True
         except Exception as e:
             from .logger import log
             log.error(f"Ошибка удаления: {e}")
@@ -534,3 +523,19 @@ class Database:
             from .logger import log
             log.error(f"Ошибка очистки: {e}")
             return False
+
+    # ============================================
+    # ПРОВЕРКА ДУБЛИКАТОВ
+    # ============================================
+
+    def email_exists(self, email: str) -> bool:
+        """
+        Проверить, существует ли аккаунт с таким email.
+
+        Args:
+            email: Email для проверки
+
+        Returns:
+            True если email уже существует
+        """
+        return self.get_account_by_email(email) is not None

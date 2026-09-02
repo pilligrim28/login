@@ -1,15 +1,6 @@
 """
-Модуль регистрации аккаунтов на разных сервисах.
+Модуль регистрации аккаунтов Microsoft (Outlook).
 Использует Playwright для эмуляции браузера.
-
-Архитектура:
-    - ``BaseRegistrator`` — общий цикл регистрации
-      (аренда номера -> прокси -> браузер -> форма -> SMS -> проверка).
-    - Подклассы реализуют специфичную для сервиса форму входа
-      (``_fill_signup_form``, ``_enter_code``) и метаданные
-      (``SIGNUP_URL``, ``SMS_CODE``, ``SUCCESS_DOMAINS``, ``EMAIL_DOMAIN``).
-
-Реестр сервисов и фабрика ``get_registrator`` находятся в ``core/services.py``.
 """
 
 import asyncio
@@ -17,9 +8,9 @@ import json
 import os
 import random
 import string
-from typing import Optional, Dict, Callable
+from typing import Optional, Dict, Callable, Tuple
 
-from playwright.async_api import async_playwright
+from playwright.async_api import async_playwright, Page, BrowserContext
 
 from .logger import log
 from .partner_api import PartnerAPI
@@ -27,28 +18,18 @@ from .database import Database
 from .proxy_manager import ProxyManager
 
 
-class BaseRegistrator:
-    """
-    Базовый класс регистрации аккаунтов.
+class MicrosoftRegistrator:
+    """Регистрация аккаунтов Microsoft (Outlook)."""
 
-    Подклассы обязаны определить:
-        SERVICE_NAME     — человекочитаемое имя сервиса.
-        SMS_CODE         — код сервиса Partner API (напр. ``mm``).
-        SIGNUP_URL       — URL страницы регистрации.
-        EMAIL_DOMAIN     — домен генерируемого email.
-        SUCCESS_DOMAINS  — домены, означающие успешную регистрацию.
+    SIGNUP_URL = "https://signup.live.com/signup"
 
-    И переопределить (при необходимости):
-        ``_fill_signup_form`` — заполнение формы (включая телефон).
-        ``_enter_code``       — ввод SMS-кода.
-        ``_check_success``    — проверка успеха (по умолчанию по URL).
-    """
-
-    SERVICE_NAME = "unknown"
-    SMS_CODE = None
-    SIGNUP_URL = ""
-    EMAIL_DOMAIN = "outlook.com"
-    SUCCESS_DOMAINS = []
+    # Домены, которые считаются успешной регистрацией
+    SUCCESS_DOMAINS = [
+        "account.microsoft.com",
+        "outlook.live.com",
+        "office.com",
+        "login.live.com"
+    ]
 
     def __init__(
             self,
@@ -122,7 +103,12 @@ class BaseRegistrator:
         return f"{first}.{last}{digits}@{self.EMAIL_DOMAIN}"
 
     def generate_password(self) -> str:
-        """Сгенерировать надёжный пароль (14-18 символов)."""
+        """
+        Сгенерировать надёжный пароль.
+
+        Returns:
+            Пароль 14-18 символов
+        """
         length = random.randint(14, 18)
         lower = string.ascii_lowercase
         upper = string.ascii_uppercase
@@ -143,23 +129,33 @@ class BaseRegistrator:
         return ''.join(password)
 
     def generate_name(self) -> tuple:
-        """Сгенерировать имя и фамилию. Returns (first_name, last_name)."""
+        """
+        Сгенерировать имя и фамилию.
+
+        Returns:
+            (first_name, last_name)
+        """
         first_names = [
             "Алексей", "Мария", "Иван", "Анна", "Павел", "Елена",
-            "Сергей", "Ольга", "Дмитрий", "Нина", "Михаил", "Татьяна",
-            "Андрей", "Ирина", "Николай", "Светлана", "Виктор", "Юлия"
+            "Сергей", "Ольга", "Дмитрий", "Нина", "Михаил", "Таня",
+            "Андрей", "Ирина", "Николай", "Светлана", "Виктор", "Юля"
         ]
 
         last_names = [
             "Смирнов", "Иванов", "Петров", "Сидоров", "Кузнецов",
             "Попов", "Волков", "Соколов", "Михайлов", "Новиков",
-            "Морозов", "Фёдоров", "Орлов", "Белов", "Киселёв"
+            "Морозов", "Федоров", "Орлов", "Белов", "Киселев"
         ]
 
         return random.choice(first_names), random.choice(last_names)
 
     def generate_birthdate(self) -> tuple:
-        """Сгенерировать дату рождения (18-50 лет). Returns (day, month, year)."""
+        """
+        Сгенерировать дату рождения (18-50 лет).
+
+        Returns:
+            (day, month, year) — строки
+        """
         year = random.randint(1975, 2007)
         month = random.randint(1, 12)
         day = random.randint(1, 28)
@@ -173,11 +169,64 @@ class BaseRegistrator:
         return f"{base}{digits}"
 
     # ============================================
-    # БРАУЗЕР
+    # ПРОВЕРКА CAPTCHA
+    # ============================================
+
+    async def _check_captcha(self, page: Page) -> bool:
+        """
+        Проверить страницу на наличие CAPTCHA.
+
+        Args:
+            page: Страница Playwright
+
+        Returns:
+            True если CAPTCHA обнаружена
+        """
+        try:
+            # Проверка на наличие reCAPTCHA iframe
+            try:
+                captcha_iframe = await page.frame_locator("iframe[title*='recaptcha' i]").first
+                if captcha_iframe:
+                    return True
+            except Exception:
+                pass
+
+            # Проверка по содержимому страницы
+            page_content = await page.content()
+            page_content_lower = page_content.lower()
+            
+            captcha_indicators = [
+                "captcha",
+                "verify you are human",
+                "i'm not a robot",
+                "recaptcha",
+                "hcaptcha",
+                "prove you're human",
+                "security check",
+            ]
+            
+            if any(indicator in page_content_lower for indicator in captcha_indicators):
+                return True
+
+            return False
+        except Exception:
+            return False
+
+    # ============================================
+    # РАБОТА С БРАУЗЕРОМ
     # ============================================
 
     async def _launch_browser(self, playwright, proxy: Optional[dict]):
-        """Запустить браузер с прокси. Returns (browser, context)."""
+        """
+        Запустить браузер с прокси.
+
+        Args:
+            playwright: Экземпляр playwright
+            proxy: Параметры прокси
+
+        Returns:
+            (browser, context)
+        """
         launch_options = {
             "headless": self.config.get("worker.headless", True),
             "args": [
@@ -211,74 +260,7 @@ class BaseRegistrator:
         return browser, context
 
     # ============================================
-    # ХУКИ (переопределяются подклассами)
-    # ============================================
-
-    async def _fill_signup_form(self, page, data: dict):
-        """
-        Заполнить форму регистрации вплоть до отправки телефона.
-
-        Универсальная реализация пробует стандартные селекторы;
-        сервисы с нестандартной формой переопределяют этот метод.
-        """
-        # email
-        await self._try_fill(
-            page,
-            ['input[name="MemberName"]', 'input[type="email"]',
-             'input[name="email"]', 'input[autocomplete="email"]'],
-            data["email"], "email"
-        )
-        await self._click_next(page)
-
-        # password
-        await page.wait_for_timeout(2000)
-        await self._try_fill(
-            page,
-            ['input[name="Password"]', 'input[type="password"]',
-             'input[name="password"]', 'input[autocomplete="new-password"]'],
-            data["password"], "password"
-        )
-        await self._click_next(page)
-
-        # имя / фамилия
-        await page.wait_for_timeout(2000)
-        await self._try_fill(page, ['input[name="FirstName"]', 'input[name="firstName"]'],
-                             data["first_name"], "first_name")
-        await self._try_fill(page, ['input[name="LastName"]', 'input[name="lastName"]'],
-                             data["last_name"], "last_name")
-        await self._click_next(page)
-
-        # дата рождения (опционально)
-        await page.wait_for_timeout(2000)
-        await self._fill_birthdate(page, data)
-        await self._click_next(page)
-
-        # телефон
-        await page.wait_for_timeout(2000)
-        await self._try_fill(
-            page,
-            ['input[name="PhoneNumber"]', 'input[type="tel"]',
-             'input[name="phone"]', 'input[autocomplete="tel"]'],
-            data["phone"], "phone"
-        )
-        await self._click_next(page)
-
-    async def _enter_code(self, page, code: str):
-        """Ввести SMS-код подтверждения."""
-        code_input = await page.wait_for_selector(
-            'input[name="OtpCode"], input[name="code"], input[type="text"], input[type="tel"]',
-            timeout=20000
-        )
-        await code_input.fill(code)
-        await self._click_next(page)
-
-    async def _check_success(self, page) -> bool:
-        """Проверить, успешна ли регистрация (по URL)."""
-        url = page.url
-        return any(domain in url for domain in self.SUCCESS_DOMAINS)
-
-    # ============================================
-    # РЕГИСТРАЦИЯ
+    # ГЛАВНЫЙ МЕТОД РЕГИСТРАЦИИ
     # ============================================
 
     async def register(self) -> Optional[Dict]:
@@ -288,7 +270,21 @@ class BaseRegistrator:
         Returns:
             {"email": ..., "password": ...} при успехе, None при неудаче.
         """
+        # Генерация данных
         email = self.generate_email()
+        
+        # Проверка на дубликат email
+        max_attempts = 5
+        for _ in range(max_attempts):
+            if not self.db.email_exists(email):
+                break
+            email = self.generate_email()
+        else:
+            self._callback_status("error", {"email": email, "error": "Не удалось сгенерировать уникальный email"})
+            self._callback_log(f"❌ Не удалось сгенерировать уникальный email после {max_attempts} попыток")
+            log.warning(f"Не удалось сгенерировать уникальный email")
+            return None
+
         password = self.generate_password()
         first_name, last_name = self.generate_name()
         day, month, year = self.generate_birthdate()
@@ -309,18 +305,15 @@ class BaseRegistrator:
             self._callback_status("renting_number", {"email": email})
             number_data = self.sms.rent_number(service=self.SMS_CODE)
 
-            if not number_data:
-                self._callback_status(
-                    "error", {"email": email, "error": "Нет номеров"}
-                )
-                self.db.add_account(
-                    email=email,
-                    password=password,
-                    status="error",
-                    error=f"Не удалось арендовать номер ({self.SERVICE_NAME})"
-                )
-                self._log_attempt(proxy_str, success=False, error="Нет номеров")
-                return None
+        if not number_data:
+            self._callback_status("error", {"email": email, "error": "Нет номеров"})
+            self.db.add_account(
+                email=email,
+                password=password,
+                status="error",
+                error="Не удалось арендовать номер"
+            )
+            return None
 
             phone = number_data["number"]
             activation_id = number_data["id"]
@@ -383,28 +376,82 @@ class BaseRegistrator:
                 timeout=45000
             )
 
-            # 3. Заполняем форму
-            self._callback_status("filling_form", {"email": email})
-            data = {
-                "email": email,
-                "password": password,
-                "first_name": first_name,
-                "last_name": last_name,
-                "day": day,
-                "month": month,
-                "year": year,
-                "username": username,
-                "phone": phone,
-            }
-            await self._fill_signup_form(page, data)
+            # 4. Заполняем email
+            self._callback_status("filling_email", {"email": email})
+            email_input = await page.wait_for_selector(
+                'input[name="MemberName"], input[type="email"]',
+                timeout=20000
+            )
+            await email_input.fill(email)
+            await self._click_next(page)
 
-            # 4. Проверка: не сообщает ли страница, что номер уже зарегистрирован.
-            if await self._detect_already_registered(page):
-                self._log_attempt(proxy_str, country, operator, False,
-                                  "Номер уже зарегистрирован")
-                return "already_registered"
+            # 5. Заполняем пароль
+            await page.wait_for_timeout(3000)
+            self._callback_status("filling_password", {"email": email})
+            password_input = await page.wait_for_selector(
+                'input[name="Password"], input[type="password"]',
+                timeout=20000
+            )
+            await password_input.fill(password)
+            await self._click_next(page)
 
-            # 5. Ожидание SMS
+            # 6. Заполняем имя и фамилию
+            await page.wait_for_timeout(3000)
+            self._callback_status("filling_name", {"email": email})
+
+            fn_input = await page.wait_for_selector(
+                'input[name="FirstName"]',
+                timeout=20000
+            )
+            await fn_input.fill(first_name)
+
+            ln_input = await page.wait_for_selector(
+                'input[name="LastName"]',
+                timeout=10000
+            )
+            await ln_input.fill(last_name)
+            await self._click_next(page)
+
+            # 7. Дата рождения
+            await page.wait_for_timeout(3000)
+            self._callback_status("filling_birthdate", {"email": email})
+
+            try:
+                day_select = await page.wait_for_selector(
+                    'select[name="BirthDay"]',
+                    timeout=10000
+                )
+                await day_select.select_option(day)
+
+                month_select = await page.wait_for_selector(
+                    'select[name="BirthMonth"]',
+                    timeout=5000
+                )
+                await month_select.select_option(month)
+
+                year_select = await page.wait_for_selector(
+                    'select[name="BirthYear"]',
+                    timeout=5000
+                )
+                await year_select.select_option(year)
+            except Exception as e:
+                self._callback_log(f"⚠️ Не удалось заполнить дату рождения: {e}")
+                log.warning(f"Дата рождения не заполнена: {e}")
+
+            await self._click_next(page)
+
+            # 8. Номер телефона
+            await page.wait_for_timeout(3000)
+            self._callback_status("filling_phone", {"email": email, "phone": phone})
+
+            phone_input = await page.wait_for_selector(
+                'input[name="PhoneNumber"], input[type="tel"]',
+                timeout=30000
+            )
+            await phone_input.fill(phone)
+            await self._click_next(page)
+
+            # 9. Ожидание SMS
             self._callback_status("waiting_sms", {"email": email, "phone": phone})
             self._callback_log(f"Ожидание SMS для {phone}...")
 
@@ -421,12 +468,18 @@ class BaseRegistrator:
 
             # 6. Ввод кода
             self._callback_status("entering_code", {"email": email})
-            await self._enter_code(page, code)
 
-            # 7. Ждём завершения
+            code_input = await page.wait_for_selector(
+                'input[name="OtpCode"], input[type="text"]',
+                timeout=20000
+            )
+            await code_input.fill(code)
+            await self._click_next(page)
+
+            # 11. Ждём завершения
             await page.wait_for_timeout(8000)
 
-            # 8. Проверяем результат
+            # 12. Проверяем результат
             current_url = page.url
             is_success = await self._check_success(page)
 
@@ -511,50 +564,13 @@ class BaseRegistrator:
     # ВСПОМОГАТЕЛЬНЫЕ МЕТОДЫ
     # ============================================
 
-    # Фразы, по которым определяем, что номер уже зарегистрирован на сервисе.
-    ALREADY_REGISTERED_PHRASES = (
-        "already registered",
-        "already in use",
-        "already been used",
-        "this phone number is already",
-        "уже зарегистрирован",
-        "уже используется",
-        "номер уже используется",
-        "already associated",
-        "this number is already",
-    )
-
-    async def _detect_already_registered(self, page) -> bool:
-        """
-        Определить по тексту страницы, что номер уже зарегистрирован.
-
-        Returns:
-            True, если сервис сообщает об уже использованном номере.
-        """
-        try:
-            text = await page.inner_text("body")
-        except Exception:
-            return False
-
-        low = text.lower()
-        return any(phrase in low for phrase in self.ALREADY_REGISTERED_PHRASES)
-
-    def _log_attempt(self, proxy, country="", operator="", success=False, error=""):
-        """Записать попытку в БД для обучения ML-модели."""
-        try:
-            self.db.add_attempt(
-                service=self.SERVICE_NAME,
-                country=country or "",
-                operator=operator or "",
-                proxy=proxy or "",
-                success=success,
-                error=error or "",
-            )
-        except Exception as e:
-            log.warning(f"Не удалось записать попытку для ML: {e}")
-
     async def _click_next(self, page):
-        """Нажать кнопку 'Далее'."""
+        """
+        Нажать кнопку "Далее".
+
+        Args:
+            page: Страница Playwright
+        """
         try:
             next_btn = await page.wait_for_selector(
                 'input[type="submit"], button[type="submit"], #idSIButton9',
@@ -565,40 +581,17 @@ class BaseRegistrator:
         except Exception as e:
             log.warning(f"Не удалось нажать Далее: {e}")
 
-    async def _try_fill(self, page, selectors, value: str, label: str) -> bool:
-        """Попытаться заполнить поле по списку селекторов. Returns True при успехе."""
-        for sel in selectors:
-            try:
-                el = await page.wait_for_selector(sel, timeout=5000)
-                await el.fill(value)
-                return True
-            except Exception:
-                continue
-        log.warning(f"Поле '{label}' не найдено (селекторы: {selectors})")
-        return False
-
-    async def _fill_birthdate(self, page, data: dict):
-        """Заполнить дату рождения (опционально)."""
-        try:
-            day_select = await page.wait_for_selector(
-                'select[name="BirthDay"], select[name="birthDay"]', timeout=5000
-            )
-            await day_select.select_option(data["day"])
-
-            month_select = await page.wait_for_selector(
-                'select[name="BirthMonth"], select[name="birthMonth"]', timeout=5000
-            )
-            await month_select.select_option(data["month"])
-
-            year_select = await page.wait_for_selector(
-                'select[name="BirthYear"], select[name="birthYear"]', timeout=5000
-            )
-            await year_select.select_option(data["year"])
-        except Exception as e:
-            log.warning(f"Дата рождения не заполнена: {e}")
-
     async def _save_cookies(self, context, email: str) -> str:
-        """Сохранить cookies в файл. Returns путь к файлу."""
+        """
+        Сохранить cookies в файл.
+
+        Args:
+            context: Контекст браузера
+            email: Email аккаунта
+
+        Returns:
+            Путь к файлу cookies
+        """
         os.makedirs("cookies", exist_ok=True)
 
         safe_email = email.replace("@", "_at_").replace(".", "_dot_")
@@ -610,270 +603,3 @@ class BaseRegistrator:
             json.dump(cookies, f, ensure_ascii=False, indent=2)
 
         return cookies_path
-
-
-# ================================================
-# КОНКРЕТНЫЕ РЕГИСТРАТОРЫ
-# ================================================
-
-
-class MicrosoftRegistrator(BaseRegistrator):
-    """Регистрация аккаунтов Microsoft (Outlook)."""
-
-    SERVICE_NAME = "Microsoft"
-    SMS_CODE = "mm"
-    SIGNUP_URL = "https://signup.live.com/signup"
-    EMAIL_DOMAIN = "outlook.com"
-    SUCCESS_DOMAINS = [
-        "account.microsoft.com",
-        "outlook.live.com",
-        "office.com",
-        "login.live.com"
-    ]
-
-    async def _fill_signup_form(self, page, data: dict):
-        """Специфичная форма Microsoft (email -> password -> name -> birthdate -> phone)."""
-        await self._try_fill(
-            page,
-            ['input[name="MemberName"]', 'input[type="email"]'],
-            data["email"], "email"
-        )
-        await self._click_next(page)
-
-        await page.wait_for_timeout(3000)
-        await self._try_fill(
-            page,
-            ['input[name="Password"]', 'input[type="password"]'],
-            data["password"], "password"
-        )
-        await self._click_next(page)
-
-        await page.wait_for_timeout(3000)
-        await self._try_fill(page, ['input[name="FirstName"]'], data["first_name"], "first_name")
-        await self._try_fill(page, ['input[name="LastName"]'], data["last_name"], "last_name")
-        await self._click_next(page)
-
-        await page.wait_for_timeout(3000)
-        await self._fill_birthdate(page, data)
-        await self._click_next(page)
-
-        await page.wait_for_timeout(3000)
-        await self._try_fill(
-            page,
-            ['input[name="PhoneNumber"]', 'input[type="tel"]'],
-            data["phone"], "phone"
-        )
-        await self._click_next(page)
-
-    async def _enter_code(self, page, code: str):
-        code_input = await page.wait_for_selector(
-            'input[name="OtpCode"], input[type="text"]', timeout=20000
-        )
-        await code_input.fill(code)
-        await self._click_next(page)
-
-
-class GoogleRegistrator(BaseRegistrator):
-    """Регистрация аккаунтов Google (Gmail)."""
-
-    SERVICE_NAME = "Google"
-    SMS_CODE = "go"
-    SIGNUP_URL = "https://accounts.google.com/signup"
-    EMAIL_DOMAIN = "gmail.com"
-    SUCCESS_DOMAINS = [
-        "myaccount.google.com",
-        "mail.google.com",
-        "accounts.google.com"
-    ]
-
-    async def _fill_signup_form(self, page, data: dict):
-        await self._try_fill(page, ['input[name="firstName"]', 'input[type="text"]'],
-                             data["first_name"], "first_name")
-        await self._try_fill(page, ['input[name="lastName"]'],
-                             data["last_name"], "last_name")
-        await self._click_next(page)
-
-        await page.wait_for_timeout(3000)
-        await self._fill_birthdate(page, data)
-        await self._click_next(page)
-
-        await page.wait_for_timeout(3000)
-        await self._try_fill(page, ['input[name="Username"]', 'input[type="email"]'],
-                             data["email"], "email")
-        await self._click_next(page)
-
-        await page.wait_for_timeout(3000)
-        await self._try_fill(page, ['input[name="Passwd"]', 'input[type="password"]'],
-                             data["password"], "password")
-        await self._click_next(page)
-
-        await page.wait_for_timeout(3000)
-        await self._try_fill(page, ['input[type="tel"]', 'input[name="phoneNumber"]'],
-                             data["phone"], "phone")
-        await self._click_next(page)
-
-
-class AppleRegistrator(BaseRegistrator):
-    """Регистрация Apple ID (appleid.apple.com)."""
-
-    SERVICE_NAME = "Apple"
-    SMS_CODE = "wx"
-    SIGNUP_URL = "https://appleid.apple.com/account"
-    EMAIL_DOMAIN = "icloud.com"
-    SUCCESS_DOMAINS = [
-        "appleid.apple.com",
-        "apple.com",
-        "icloud.com"
-    ]
-
-    async def _fill_signup_form(self, page, data: dict):
-        await self._try_fill(page, ['input[name="firstName"]', 'input[type="text"]'],
-                             data["first_name"], "first_name")
-        await self._try_fill(page, ['input[name="lastName"]'],
-                             data["last_name"], "last_name")
-        await self._click_next(page)
-
-        await page.wait_for_timeout(3000)
-        await self._fill_birthdate(page, data)
-        await self._click_next(page)
-
-        await page.wait_for_timeout(3000)
-        await self._try_fill(page, ['input[name="emailAddress"]', 'input[type="email"]'],
-                             data["email"], "email")
-        await self._click_next(page)
-
-        await page.wait_for_timeout(3000)
-        await self._try_fill(page, ['input[name="password"]', 'input[type="password"]'],
-                             data["password"], "password")
-        await self._click_next(page)
-
-        await page.wait_for_timeout(3000)
-        await self._try_fill(page, ['input[name="phoneNumber"]', 'input[type="tel"]'],
-                             data["phone"], "phone")
-        await self._click_next(page)
-
-
-class SnapchatRegistrator(BaseRegistrator):
-    """Регистрация Snapchat (accounts.snapchat.com)."""
-
-    SERVICE_NAME = "Snapchat"
-    SMS_CODE = "fu"
-    SIGNUP_URL = "https://accounts.snapchat.com/accounts/signup"
-    EMAIL_DOMAIN = "gmail.com"
-    SUCCESS_DOMAINS = [
-        "accounts.snapchat.com",
-        "snapchat.com"
-    ]
-
-    async def _fill_signup_form(self, page, data: dict):
-        await self._try_fill(page, ['input[name="firstName"]', 'input[type="text"]'],
-                             data["first_name"], "first_name")
-        await self._try_fill(page, ['input[name="lastName"]'],
-                             data["last_name"], "last_name")
-        await self._click_next(page)
-
-        await page.wait_for_timeout(3000)
-        await self._fill_birthdate(page, data)
-        await self._click_next(page)
-
-        await page.wait_for_timeout(3000)
-        await self._try_fill(page, ['input[name="username"]'],
-                             data["username"], "username")
-        await self._try_fill(page, ['input[name="email"]', 'input[type="email"]'],
-                             data["email"], "email")
-        await self._try_fill(page, ['input[name="password"]', 'input[type="password"]'],
-                             data["password"], "password")
-        await self._click_next(page)
-
-        await page.wait_for_timeout(3000)
-        await self._try_fill(page, ['input[type="tel"]', 'input[name="phoneNumber"]'],
-                             data["phone"], "phone")
-        await self._click_next(page)
-
-
-class InstagramRegistrator(BaseRegistrator):
-    """Регистрация Instagram (instagram.com)."""
-
-    SERVICE_NAME = "Instagram"
-    SMS_CODE = "ig"
-    SIGNUP_URL = "https://www.instagram.com/accounts/emailsignup/"
-    EMAIL_DOMAIN = "gmail.com"
-    SUCCESS_DOMAINS = [
-        "instagram.com"
-    ]
-
-    async def _fill_signup_form(self, page, data: dict):
-        await self._try_fill(page, ['input[name="emailOrPhone"]', 'input[type="text"]'],
-                             data["email"], "email")
-        await self._try_fill(page, ['input[name="fullName"]'],
-                             f"{data['first_name']} {data['last_name']}", "full_name")
-        await self._try_fill(page, ['input[name="username"]'],
-                             data["username"], "username")
-        await self._try_fill(page, ['input[name="password"]', 'input[type="password"]'],
-                             data["password"], "password")
-        await self._click_next(page)
-
-        await page.wait_for_timeout(3000)
-        await self._fill_birthdate(page, data)
-        await self._click_next(page)
-
-        await page.wait_for_timeout(3000)
-        await self._try_fill(page, ['input[type="tel"]', 'input[name="phoneNumber"]'],
-                             data["phone"], "phone")
-        await self._click_next(page)
-
-
-class FacebookRegistrator(BaseRegistrator):
-    """Регистрация Facebook (facebook.com/reg)."""
-
-    SERVICE_NAME = "Facebook"
-    SMS_CODE = "fb"
-    SIGNUP_URL = "https://www.facebook.com/reg"
-    EMAIL_DOMAIN = "gmail.com"
-    SUCCESS_DOMAINS = [
-        "facebook.com"
-    ]
-
-    async def _fill_signup_form(self, page, data: dict):
-        await self._try_fill(page, ['input[name="firstname"]', 'input[type="text"]'],
-                             data["first_name"], "first_name")
-        await self._try_fill(page, ['input[name="lastname"]'],
-                             data["last_name"], "last_name")
-        await self._try_fill(page, ['input[name="reg_email__"]', 'input[type="email"]'],
-                             data["email"], "email")
-        await self._try_fill(page, ['input[name="reg_passwd__"]', 'input[type="password"]'],
-                             data["password"], "password")
-        await self._fill_birthdate(page, data)
-        await self._click_next(page)
-
-        await page.wait_for_timeout(3000)
-        await self._try_fill(page, ['input[type="tel"]', 'input[name="phoneNumber"]'],
-                             data["phone"], "phone")
-        await self._click_next(page)
-
-
-class DiscordRegistrator(BaseRegistrator):
-    """Регистрация Discord (discord.com/register)."""
-
-    SERVICE_NAME = "Discord"
-    SMS_CODE = "ds"
-    SIGNUP_URL = "https://discord.com/register"
-    EMAIL_DOMAIN = "gmail.com"
-    SUCCESS_DOMAINS = [
-        "discord.com"
-    ]
-
-    async def _fill_signup_form(self, page, data: dict):
-        await self._try_fill(page, ['input[name="email"]', 'input[type="email"]'],
-                             data["email"], "email")
-        await self._try_fill(page, ['input[name="username"]'],
-                             data["username"], "username")
-        await self._try_fill(page, ['input[name="password"]', 'input[type="password"]'],
-                             data["password"], "password")
-        await self._fill_birthdate(page, data)
-        await self._click_next(page)
-
-        await page.wait_for_timeout(3000)
-        await self._try_fill(page, ['input[type="tel"]', 'input[name="phoneNumber"]'],
-                             data["phone"], "phone")
-        await self._click_next(page)

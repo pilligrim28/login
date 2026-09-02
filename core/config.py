@@ -1,6 +1,7 @@
 """
 Модуль конфигурации.
-Загрузка и управление YAML-конфигом.
+Загрузка и управление конфигурацией из YAML-файла.
+Добавлена валидация типов данных.
 """
 
 import yaml
@@ -9,7 +10,10 @@ from typing import Any, Optional
 
 
 class Config:
-    """Загрузка и управление конфигурацией."""
+    """
+    Загрузка и управление конфигурацией.
+    Поддерживает вложенные ключи (например, "sms.api_key").
+    """
 
     def __init__(self, path: str = "config.yaml"):
         self.path = path
@@ -33,11 +37,21 @@ class Config:
 
     def get(self, key: str, default: Any = None) -> Any:
         """
-        Получить значение по ключу через точку.
+        Получить значение по ключу с валидацией.
 
         Пример:
             config.get("sms.api_key")
             config.get("worker.threads", 10)
+
+        Args:
+            key: Ключ (может быть вложенным через точку)
+            default: Значение по умолчанию
+
+        Returns:
+            Значение или default
+
+        Raises:
+            ValueError: Если значение не прошло валидацию
         """
         keys = key.split(".")
         value = self.data
@@ -51,7 +65,26 @@ class Config:
             if value is None:
                 return default
 
+        # Валидация типов
+        self._validate(key, value)
+
         return value
+
+    def _validate(self, key: str, value: Any):
+        """Валидация значения по ключу."""
+        validation_rules = {
+            "worker.threads": (int, "worker.threads должен быть целым числом"),
+            "worker.total_registrations": (int, "worker.total_registrations должен быть целым числом"),
+            "worker.retry_count": (int, "worker.retry_count должен быть целым числом"),
+            "sms.max_price": ((int, float), "sms.max_price должен быть числом"),
+            "sms.max_sms_wait": (int, "sms.max_sms_wait должен быть целым числом"),
+            "proxy.enabled": (bool, "proxy.enabled должен быть булевым значением"),
+        }
+
+        if key in validation_rules:
+            expected_types, error_msg = validation_rules[key]
+            if not isinstance(value, expected_types):
+                raise ValueError(error_msg)
 
     def set(self, key: str, value: Any):
         """
@@ -76,7 +109,7 @@ class Config:
             yaml.dump(self.data, f, default_flow_style=False, allow_unicode=True)
 
     def reload(self):
-        """Перезагрузить из файла."""
+        """Перезагрузить конфиг из файла."""
         self.data = self._load()
 
     def __repr__(self):

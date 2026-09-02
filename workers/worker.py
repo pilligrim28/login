@@ -14,18 +14,27 @@ from core.ml_model import get_model, record_to_features, find_opportunities
 
 
 class Worker:
-    """Воркер для массовой регистрации."""
+    """
+    Воркер для массовой регистрации аккаунтов.
+    
+    Использует ThreadPoolExecutor для параллельной работы.
+    Добавлена:
+    - Проверка баланса перед каждой регистрацией
+    - Проверка на остановку
+    - Колбэки для отслеживания прогресса
+    """
 
     def __init__(self, config: Config):
         self.config = config
         self.db = Database(config)
         self.proxy_manager = ProxyManager(config)
+        
         api_key = config.get("sms.api_key", "")
         base_url = config.get("sms.partner_url", "")
         service = config.get("sms.service", "Microsoft")
         country = config.get("sms.country", "all")
         max_price = config.get("sms.max_price", 0)
-        self.sms = PartnerAPI(
+        self.sms = SMSActivate(
             api_key,
             base_url=base_url or None,
             service=service,
@@ -55,7 +64,9 @@ class Worker:
         log.warning("Остановка запрошена...")
 
     def run(self):
-        """Запустить регистрацию (блокирующий вызов)."""
+        """
+        Запустить регистрацию (блокирующий вызов).
+        """
         self._stop_flag.clear()
 
         total = self.config.get("worker.total_registrations", 100)
@@ -74,9 +85,6 @@ class Worker:
             if self.on_finished:
                 self.on_finished()
             return
-
-        # Обучение ML-модели на истории попыток и подсказка возможностей.
-        self._train_and_suggest()
 
         success_count = 0
         fail_count = 0
@@ -113,7 +121,7 @@ class Worker:
                     log.info(f"Прогресс: {done_count}/{total} "
                              f"(успех: {success_count}, неудача: {fail_count})")
 
-        log.success(f"=== ЗАВЕРШЕНО: {success_count}/{total} успешно ===")
+        log.success(f"=== Завершено: {success_count}/{total} успешно ===")
 
         if self.on_finished:
             try:
@@ -158,26 +166,20 @@ class Worker:
             log.warning(f"ML: не удалось обучить модель: {e}")
 
     def _register_one(self, index: int, total: int) -> Optional[Dict]:
-        """Один аккаунт (в потоке)."""
+        """
+        Зарегистрировать один аккаунт (в потоке).
+        """
         if self._stop_flag.is_set():
             return None
 
-        # Ротация сервисов: каждый следующий аккаунт — следующий сервис.
-        service_name = self.services[(index - 1) % len(self.services)]
-
-        try:
-            registrator = get_registrator(
-                service_name,
-                sms=self.sms,
-                db=self.db,
-                proxy_manager=self.proxy_manager,
-                config=self.config,
-                on_status=lambda status, data: self._handle_status(index, total, status, data),
-                on_log=lambda msg: self._handle_log(msg)
-            )
-        except ValueError as e:
-            log.error(str(e))
-            return None
+        registrator = MicrosoftRegistrator(
+            sms=self.sms,
+            db=self.db,
+            proxy_manager=self.proxy_manager,
+            config=self.config,
+            on_status=lambda status, data: self._handle_status(index, total, status, data),
+            on_log=lambda msg: self._handle_log(msg)
+        )
 
         result = asyncio.run(registrator.register())
 
@@ -205,7 +207,7 @@ class Worker:
                 self.on_log(f"[{index}/{total}] ▶️ Начало: {email}")
 
     def _handle_log(self, message: str):
-        """Передать лог в GUI."""
+        """Передача лога в GUI."""
         if self.on_log:
             try:
                 self.on_log(message)
