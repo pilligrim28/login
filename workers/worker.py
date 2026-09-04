@@ -10,6 +10,7 @@ from core.database import Database
 from core.partner_api import PartnerAPI
 from core.proxy_manager import ProxyManager
 from core.services import get_registrator
+from core.sms import SMSActivate
 from core.ml_model import get_model, record_to_features, find_opportunities
 
 
@@ -172,7 +173,11 @@ class Worker:
         if self._stop_flag.is_set():
             return None
 
-        registrator = MicrosoftRegistrator(
+        # Выбираем сервис из списка (ротация).
+        service = self.services[(index - 1) % len(self.services)]
+
+        registrator = get_registrator(
+            service_name=service,
             sms=self.sms,
             db=self.db,
             proxy_manager=self.proxy_manager,

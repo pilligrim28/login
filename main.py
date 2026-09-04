@@ -23,6 +23,7 @@ from core.config import Config
 from core.database import Database
 from core.partner_api import PartnerAPI
 from core.proxy_manager import ProxyManager
+from core.ml_model import get_model, record_to_features, find_opportunities
 from workers.worker import Worker
 
 
@@ -87,6 +88,108 @@ def check_setup(config: Config) -> bool:
 
     log.success("=== Конфигурация OK ===")
     return True
+
+
+def run_sync(config: Config):
+    """Запустить регистрацию в синхронном режиме."""
+    worker = Worker(config)
+
+    def on_progress(done, total, success, failed):
+        log.info(f"Прогресс: {done}/{total} (успех: {success}, неудача: {failed})")
+
+    def on_account(account):
+        log.info(f"Аккаунт: {account}")
+
+    def on_log(message):
+        log.info(message)
+
+    def on_finished():
+        log.success("Регистрация завершена")
+
+    worker.on_progress = on_progress
+    worker.on_account = on_account
+    worker.on_log = on_log
+    worker.on_finished = on_finished
+
+    try:
+        worker.run()
+    except KeyboardInterrupt:
+        log.warning("Прервано пользователем (Ctrl+C)")
+        worker.stop()
+
+
+async def run_async(config: Config):
+    """Запустить регистрацию в асинхронном режиме."""
+    from workers.async_worker import AsyncWorker
+
+    worker = AsyncWorker(config)
+
+    try:
+        await worker.run()
+    except KeyboardInterrupt:
+        log.warning("Прервано пользователем (Ctrl+C)")
+        worker.stop()
+
+
+async def async_check_setup(config: Config) -> bool:
+    """Проверить настройки в асинхронном режиме."""
+    log.info("=== Проверка конфигурации (async) ===")
+
+    api_key = config.get("sms.api_key", "")
+    if not api_key or api_key == "ВАШ_API_КЛЮЧ":
+        log.error("API-ключ SMS не настроен.")
+        return False
+
+    base_url = config.get("sms.api_url", "")
+
+    from core.sms_async import AsyncSMSActivate
+    async with AsyncSMSActivate(api_key, base_url=base_url or None) as sms:
+        balance = await sms.get_balance()
+        if balance is not None:
+            log.success(f"Баланс SMS-Activate: {balance:.2f} ₽")
+        else:
+            log.error("Не удалось получить баланс. Проверьте API-ключ.")
+            return False
+
+    pm = ProxyManager(config)
+    if pm.has_proxies():
+        log.success(f"Прокси загружены: {len(pm.proxies)}")
+    else:
+        log.warning("Прокси не настроены.")
+
+    db = Database(config)
+    stats = db.get_stats()
+    log.success(f"База данных: всего {stats['total']} аккаунтов, успешных {stats['success']}")
+
+    log.success("=== Конфигурация OK ===")
+    return True
+
+
+def ml_suggest(config: Config):
+    """Обучить ML-модель и показать возможности."""
+    db = Database(config)
+    attempts = db.get_attempts()
+
+    if len(attempts) < 10:
+        log.warning(f"Недостаточно данных для ML: {len(attempts)}/10")
+        return
+
+    model = get_model(config)
+    records = [(record_to_features(a), int(a.get("success", 0))) for a in attempts]
+    model.fit(records)
+    model.save()
+    log.info(f"ML: модель обучена на {len(records)} попытках")
+
+    opportunities = find_opportunities(model, attempts, top_k=5)
+    if opportunities:
+        log.info("ML: топ возможностей (сервис / страна -> вероятность):")
+        for proba, opts in opportunities:
+            log.info(
+                f"     {opts.get('service') or '?'} / "
+                f"{opts.get('country') or '?'} -> {proba * 100:.1f}%"
+            )
+    else:
+        log.info("ML: возможности не найдены")
 
 
 def main():

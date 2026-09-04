@@ -18,9 +18,87 @@ from .database import Database
 from .proxy_manager import ProxyManager
 
 
-class MicrosoftRegistrator:
+class BaseRegistrator:
+    """Базовый класс для всех регистраторов."""
+
+    SERVICE_NAME: str = "Unknown"
+    SMS_CODE: str = ""
+    SIGNUP_URL: str = ""
+
+    def __init__(
+            self,
+            sms,
+            db,
+            proxy_manager,
+            config,
+            on_status: Optional[Callable] = None,
+            on_log: Optional[Callable] = None
+    ):
+        self.sms = sms
+        self.db = db
+        self.proxy_manager = proxy_manager
+        self.config = config
+        self.on_status = on_status
+        self.on_log = on_log
+
+    async def _sms_call(self, method_name: str, *args, **kwargs):
+        """
+        Вызвать метод SMS-API, работая и с синхронным, и с асинхронным клиентом.
+
+        Если метод возвращает coroutine — awaiting, иначе — обычный вызов.
+        """
+        method = getattr(self.sms, method_name)
+        result = method(*args, **kwargs)
+        if asyncio.iscoroutine(result):
+            return await result
+        return result
+
+    def _callback_status(self, status: str, data: dict = None):
+        if self.on_status:
+            try:
+                self.on_status(status, data or {})
+            except Exception:
+                pass
+
+    def _callback_log(self, message: str):
+        if self.on_log:
+            try:
+                self.on_log(message)
+            except Exception:
+                pass
+
+    def generate_email(self) -> str:
+        raise NotImplementedError
+
+    def generate_password(self) -> str:
+        raise NotImplementedError
+
+    def generate_name(self) -> tuple:
+        raise NotImplementedError
+
+    def generate_birthdate(self) -> tuple:
+        raise NotImplementedError
+
+    def generate_username(self) -> str:
+        raise NotImplementedError
+
+    async def register(self) -> Optional[Dict]:
+        raise NotImplementedError
+
+    async def _run_attempt(
+            self,
+            email, password, first_name, last_name, day, month, year,
+            username, phone, activation_id, proxy, proxy_str, country, operator
+    ) -> str:
+        raise NotImplementedError
+
+
+class MicrosoftRegistrator(BaseRegistrator):
     """Регистрация аккаунтов Microsoft (Outlook)."""
 
+    SERVICE_NAME = "Microsoft"
+    SMS_CODE = "mm"
+    EMAIL_DOMAIN = "outlook.com"
     SIGNUP_URL = "https://signup.live.com/signup"
 
     # Домены, которые считаются успешной регистрацией
@@ -303,17 +381,17 @@ class MicrosoftRegistrator:
         for attempt in range(max_number_retries):
             # 1. Аренда номера под конкретный сервис
             self._callback_status("renting_number", {"email": email})
-            number_data = self.sms.rent_number(service=self.SMS_CODE)
+            number_data = await self._sms_call("rent_number", service=self.SMS_CODE)
 
-        if not number_data:
-            self._callback_status("error", {"email": email, "error": "Нет номеров"})
-            self.db.add_account(
-                email=email,
-                password=password,
-                status="error",
-                error="Не удалось арендовать номер"
-            )
-            return None
+            if not number_data:
+                self._callback_status("error", {"email": email, "error": "Нет номеров"})
+                self.db.add_account(
+                    email=email,
+                    password=password,
+                    status="error",
+                    error="Не удалось арендовать номер"
+                )
+                return None
 
             phone = number_data["number"]
             activation_id = number_data["id"]
@@ -336,7 +414,7 @@ class MicrosoftRegistrator:
             # Номер уже зарегистрирован на сервисе либо SMS не пришло —
             # помечаем номер как использованный и берём новый.
             if outcome in ("already_registered", "sms_timeout"):
-                self.sms.report_bad_number(activation_id)
+                await self._sms_call("report_bad_number", activation_id)
                 self._callback_log(f"↻ Номер {phone} не подходит — берём новый")
                 continue
 
@@ -455,7 +533,7 @@ class MicrosoftRegistrator:
             self._callback_status("waiting_sms", {"email": email, "phone": phone})
             self._callback_log(f"Ожидание SMS для {phone}...")
 
-            code = self.sms.wait_code(activation_id)
+            code = await self._sms_call("wait_code", activation_id)
 
             if not code:
                 self._callback_status(
@@ -489,7 +567,7 @@ class MicrosoftRegistrator:
                 log.success(f"Регистрация успешна: {email}")
 
                 cookies_path = await self._save_cookies(context, email)
-                self.sms.confirm(activation_id)
+                await self._sms_call("confirm", activation_id)
 
                 self.db.add_account(
                     email=email,
@@ -512,7 +590,7 @@ class MicrosoftRegistrator:
                 f"Регистрация не удалась: {email} | URL: {current_url}"
             )
 
-            self.sms.cancel(activation_id)
+            await self._sms_call("cancel", activation_id)
             self.db.add_account(
                 email=email,
                 password=password,
@@ -528,7 +606,7 @@ class MicrosoftRegistrator:
             self._callback_status("error", {"email": email, "error": "Timeout"})
             self._callback_log(f"❌ Таймаут: {email}")
             log.error(f"Таймаут при регистрации {email}")
-            self.sms.cancel(activation_id)
+            await self._sms_call("cancel", activation_id)
             self.db.add_account(
                 email=email,
                 password=password,
@@ -543,7 +621,7 @@ class MicrosoftRegistrator:
             self._callback_status("error", {"email": email, "error": str(e)})
             self._callback_log(f"❌ Ошибка: {e}")
             log.error(f"Исключение при регистрации {email}: {e}")
-            self.sms.cancel(activation_id)
+            await self._sms_call("cancel", activation_id)
             self.db.add_account(
                 email=email,
                 password=password,
@@ -603,3 +681,93 @@ class MicrosoftRegistrator:
             json.dump(cookies, f, ensure_ascii=False, indent=2)
 
         return cookies_path
+
+    async def _check_success(self, page) -> bool:
+        """
+        Проверить, завершится ли регистрация успешно.
+
+        Args:
+            page: Страница Playwright
+
+        Returns:
+            True если регистрация успешна
+        """
+        try:
+            current_url = page.url
+            for domain in self.SUCCESS_DOMAINS:
+                if domain in current_url:
+                    return True
+            return False
+        except Exception:
+            return False
+
+    def _log_attempt(self, proxy_str: str, country: str, operator: str,
+                     success: bool, error: str):
+        """
+        Записать попытку в лог.
+
+        Args:
+            proxy_str: Строка прокси
+            country: Код страны
+            operator: Название оператора
+            success: True если успешно
+            error: Описание ошибки
+        """
+        log.info(
+            f"[{self.SERVICE_NAME}] proxy={proxy_str} country={country} "
+            f"operator={operator} success={success} error={error}"
+        )
+
+
+class GoogleRegistrator(BaseRegistrator):
+    """Регистрация аккаунтов Google (Gmail)."""
+
+    SERVICE_NAME = "Google"
+    SMS_CODE = "go"
+    EMAIL_DOMAIN = "gmail.com"
+    SIGNUP_URL = "https://accounts.google.com/signup"
+
+
+class AppleRegistrator(BaseRegistrator):
+    """Регистрация аккаунтов Apple (ID)."""
+
+    SERVICE_NAME = "Apple"
+    SMS_CODE = "wx"
+    EMAIL_DOMAIN = "icloud.com"
+    SIGNUP_URL = "https://appleid.apple.com/account"
+
+
+class SnapchatRegistrator(BaseRegistrator):
+    """Регистрация аккаунтов Snapchat."""
+
+    SERVICE_NAME = "Snapchat"
+    SMS_CODE = "sc"
+    EMAIL_DOMAIN = "snapchat.com"
+    SIGNUP_URL = "https://account.snapchat.com/accounts/signup"
+
+
+class InstagramRegistrator(BaseRegistrator):
+    """Регистрация аккаунтов Instagram."""
+
+    SERVICE_NAME = "Instagram"
+    SMS_CODE = "ig"
+    EMAIL_DOMAIN = "instagram.com"
+    SIGNUP_URL = "https://www.instagram.com/accounts/emailsignup"
+
+
+class FacebookRegistrator(BaseRegistrator):
+    """Регистрация аккаунтов Facebook."""
+
+    SERVICE_NAME = "Facebook"
+    SMS_CODE = "fb"
+    EMAIL_DOMAIN = "facebook.com"
+    SIGNUP_URL = "https://www.facebook.com/r/"
+
+
+class DiscordRegistrator(BaseRegistrator):
+    """Регистрация аккаунтов Discord."""
+
+    SERVICE_NAME = "Discord"
+    SMS_CODE = "dc"
+    EMAIL_DOMAIN = "discord.com"
+    SIGNUP_URL = "https://discord.com/register"
