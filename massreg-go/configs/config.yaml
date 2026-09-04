@@ -1,0 +1,151 @@
+server:
+  host: "0.0.0.0"
+  port: 8000
+  jwt_secret: ${JWT_SECRET}
+  api_key: ${API_KEY}
+  read_timeout: "30s"
+  write_timeout: "30s"
+  shutdown_timeout: "10s"
+
+database:
+  postgres_url: "postgresql://user:pass@localhost:5432/massreg"
+  sqlite_path: "accounts.db"
+  type: "sqlite"
+  max_open_conns: 50
+  max_idle_conns: 10
+  conn_max_lifetime: "5m"
+
+redis:
+  addrs: ${REDIS_NODES}
+  password: ${REDIS_PASSWORD}
+  pool_size: 100
+  min_idle_conns: 10
+  conn_max_idle_time: "5m"
+  db: 0
+
+kafka:
+  brokers: ${KAFKA_BROKERS}
+  topic: "registration_queue"
+  partitions: 50
+  consumer_group: "workers"
+  reader_min_bytes: 1
+  reader_max_bytes: 10485760
+  writer_max_attempts: 3
+
+sms:
+  api_key: "M1ndLabrTT_2"
+  api_url: "https://46.21.159.86/stubs/handler_api.php"
+  partner_url: "https://46.21.159.86/partner"
+  country: "all"
+  max_price: 0
+  max_sms_wait: 300
+  service: "Microsoft"
+  services:
+    - "Microsoft"
+    - "Google"
+    - "Apple"
+    - "Snapchat"
+  rate_limit: 10
+  timeout: "30s"
+  cache_ttl: "5s"
+
+proxy:
+  enabled: true
+  type: "http"
+  mode: "static"
+  strategy: "round-robin"
+  dead_timeout: 300
+  proxies:
+    - "92.204.164.15:9000:a995a71bbb0ee8097afe633a914168e5-type-residential-country-CR:59c8d77e-4957-4af2-9058-3cac156a4e2e"
+  iproyal_api_key: ""
+  iproyal_country: "all"
+  iproyal_length: 30
+  rotation_url: ""
+  health_check:
+    enabled: true
+    interval: "30s"
+    timeout: "5s"
+    dead_threshold: 3
+    recovery_interval: "5m"
+
+worker:
+  threads: 20
+  headless: true
+  retry_count: 3
+  number_retries: 3
+  total_registrations: 100
+  pool_size: 100
+  queue_size: 10000
+  batch_size: 50
+  max_retries: 3
+  registration_timeout: "120s"
+  graceful_shutdown_timeout: "30s"
+
+ml:
+  model_path: "ml_model.json"
+  learning_rate: 0.15
+  l2: 0.01
+  min_samples: 10
+  enabled: true
+  l2_regularization: 0.01
+  update_interval: "1h"
+  redis_key: "ml:model:v1"
+
+cache:
+  default_ttl: "300s"
+  email_ttl: "86400s"
+  phone_ttl: "3600s"
+  proxy_ttl: "60s"
+  sms_status_ttl: "300s"
+
+logging:
+  level: "info"
+  format: "json"
+  output: "stdout"
+  file_path: "/var/log/massreg/app.log"
+  max_size: 100
+  max_backups: 5
+  max_age: 30
+  compress: true
+
+metrics:
+  enabled: true
+  port: 9090
+  path: "/metrics"
+
+security:
+  aes_key: ${AES_ENCRYPTION_KEY}
+  jwt_expiry: "24h"
+  jwt_refresh_expiry: "168h"
+  rate_limit_requests: 1000
+  rate_limit_window: "1s"
+
+services:
+  microsoft:
+    enabled: true
+    api_url: "https://signup.live.com/API"
+    timeout: "30s"
+  google:
+    enabled: true
+    api_url: "https://accounts.google.com/_/signup"
+    timeout: "30s"
+  apple:
+    enabled: true
+    api_url: "https://appleid.apple.com/account/create"
+    timeout: "30s"
+  snapchat:
+    enabled: true
+    api_url: "https://accounts.snapchat.com/accounts/signup"
+    timeout: "30s"
+  instagram:
+    enabled: true
+    api_url: "https://www.instagram.com/accounts/emailsignup/"
+    timeout: "30s"
+  facebook:
+    enabled: true
+    api_url: "https://www.facebook.com/r.php"
+    timeout: "30s"
+  discord:
+    enabled: true
+    api_url: "https://discord.com/api/v9/auth/register"
+    timeout: "30s"

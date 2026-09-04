@@ -1,9 +1,32 @@
-*.pyc
-__pycache__/
-logs/*.log
-*.db
-cookies/*.json
-.test.db
-.pytest_cache/
-.DS_Store
-Thumbs.db
+```
+# Compiled and build artifacts
+*.o
+*.obj
+*.out
+
+# Dependencies
+vendor/
+
+# Logs and temp files
+*.log
+*.tmp
+
+# Environment
+.env
+.env.local
+.env.*
+
+# Editors
+.vscode/
+.idea/
+
+# Go-specific
+*.exe
+*.dll
+*.so
+*.a
+*.dylib
+*.test
+*.prof
+cover.out
+```

@@ -1,0 +1,177 @@
+version: '3.8'
+
+services:
+  # API Gateway
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+      - "9090:9090"
+    environment:
+      - CONFIG_PATH=/app/configs/config.yaml
+      - JWT_SECRET=${JWT_SECRET:-change-me-in-production}
+      - API_KEY=${API_KEY:-change-me-in-production}
+      - POSTGRES_URL=postgres://massreg:massreg@postgres:5432/massreg?sslmode=disable
+      - REDIS_NODES=redis:6379
+      - REDIS_PASSWORD=${REDIS_PASSWORD:-change-me}
+      - KAFKA_BROKERS=kafka:9092
+      - SMS_API_KEY_1=${SMS_API_KEY_1:-}
+      - PROXY_LIST=${PROXY_LIST:-}
+      - AES_ENCRYPTION_KEY=${AES_ENCRYPTION_KEY:-change-me-in-production-32chars!}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      kafka:
+        condition: service_started
+    restart: unless-stopped
+    networks:
+      - massreg-network
+
+  # Worker Service
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: ["/app/worker"]
+    environment:
+      - CONFIG_PATH=/app/configs/config.yaml
+      - POSTGRES_URL=postgres://massreg:massreg@postgres:5432/massreg?sslmode=disable
+      - REDIS_NODES=redis:6379
+      - REDIS_PASSWORD=${REDIS_PASSWORD:-change-me}
+      - KAFKA_BROKERS=kafka:9092
+      - SMS_API_KEY_1=${SMS_API_KEY_1:-}
+      - PROXY_LIST=${PROXY_LIST:-}
+    depends_on:
+      - api
+      - postgres
+      - redis
+      - kafka
+    deploy:
+      replicas: 10
+    restart: unless-stopped
+    networks:
+      - massreg-network
+
+  # Scheduler Service
+  scheduler:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: ["/app/scheduler"]
+    environment:
+      - CONFIG_PATH=/app/configs/config.yaml
+      - POSTGRES_URL=postgres://massreg:massreg@postgres:5432/massreg?sslmode=disable
+      - REDIS_NODES=redis:6379
+      - REDIS_PASSWORD=${REDIS_PASSWORD:-change-me}
+      - KAFKA_BROKERS=kafka:9092
+    depends_on:
+      - api
+      - postgres
+      - redis
+      - kafka
+    restart: unless-stopped
+    networks:
+      - massreg-network
+
+  # PostgreSQL Database
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      - POSTGRES_USER=massreg
+      - POSTGRES_PASSWORD=massreg
+      - POSTGRES_DB=massreg
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./deployments/init.sql:/docker-entrypoint-initdb.d/init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U massreg -d massreg"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    networks:
+      - massreg-network
+
+  # Redis Cache
+  redis:
+    image: redis:7-alpine
+    command: redis-server --requirepass ${REDIS_PASSWORD:-change-me}
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD:-change-me}", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    networks:
+      - massreg-network
+
+  # Kafka Message Queue
+  kafka:
+    image: confluentinc/cp-kafka:7.5.0
+    environment:
+      - KAFKA_NODE_ID=1
+      - KAFKA_PROCESS_ROLES=broker,controller
+      - KAFKA_CONTROLLER_QUORUM_VOTE=1@kafka:9093
+      - KAFKA_LISTENERS=PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093
+      - KAFKA_ADVERTISED_LISTENERS=PLAINTEXT://kafka:9092
+      - KAFKA_CONTROLLER_LISTENER_NAMES=CONTROLLER
+      - KAFKA_LISTENER_SECURITY_PROTOCOL_MAP=CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+      - KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR=1
+      - KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR=1
+      - KAFKA_TRANSACTION_STATE_LOG_MIN_ISR=1
+      - CLUSTER_ID=massreg-cluster-id
+    volumes:
+      - kafka-data:/var/lib/kafka/data
+    restart: unless-stopped
+    networks:
+      - massreg-network
+
+  # Prometheus Monitoring
+  prometheus:
+    image: prom/prometheus:v2.47.0
+    volumes:
+      - ./deployments/prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus-data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+    ports:
+      - "9091:9090"
+    restart: unless-stopped
+    networks:
+      - massreg-network
+
+  # Grafana Dashboards
+  grafana:
+    image: grafana/grafana:10.1.0
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD:-admin}
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./deployments/grafana/dashboards:/etc/grafana/provisioning/dashboards
+      - ./deployments/grafana/datasources:/etc/grafana/provisioning/datasources
+    ports:
+      - "3000:3000"
+    depends_on:
+      - prometheus
+    restart: unless-stopped
+    networks:
+      - massreg-network
+
+volumes:
+  postgres-data:
+  redis-data:
+  kafka-data:
+  prometheus-data:
+  grafana-data:
+
+networks:
+  massreg-network:
+    driver: bridge
