@@ -12,18 +12,12 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/go-redis/redis/v8"
-	"github.com/lib/pq"
-	"github.com/rs/zerolog"
-	"github.com/spf13/viper"
 
-	"massreg-go/internal/core/config"
-	"massreg-go/internal/core/logger"
-	"massreg-go/internal/services/proxy"
-	"massreg-go/internal/services/registration"
-	"massreg-go/internal/services/sms"
-	"massreg-go/internal/repository"
-	"massreg-go/internal/cache"
-	"massreg-go/internal/ml"
+	"massreg/internal/core/config"
+	"massreg/internal/core/logger"
+	"massreg/internal/services/proxy"
+	"massreg/internal/services/registration"
+	"massreg/internal/services/sms"
 )
 
 var (
@@ -33,66 +27,63 @@ var (
 
 func main() {
 	// Initialize configuration
-	cfg, err := config.LoadConfig()
+	cfg, err := config.Load("configs/config.yaml")
 	if err != nil {
 		log.Fatalf("Failed to load config: %v", err)
 	}
 
 	// Initialize logger
-	logLevel := zerolog.InfoLevel
-	if cfg.Logging.Level == "debug" {
-		logLevel = zerolog.DebugLevel
-	} else if cfg.Logging.Level == "warn" {
-		logLevel = zerolog.WarnLevel
-	} else if cfg.Logging.Level == "error" {
-		logLevel = zerolog.ErrorLevel
-	}
-
-	logger.InitLogger(logLevel, cfg.Logging.Format)
-	zlog := logger.GetLogger().With().Str("service", "massreg").Str("version", version).Logger()
-	zlog.Info().Msg("Starting MassReg service")
-
-	// Initialize database
-	db, err := initDatabase(cfg)
+	err = logger.Init(logger.Config{
+		Level:      cfg.Logging.Level,
+		Format:     cfg.Logging.Format,
+		Output:     cfg.Logging.Output,
+		FilePath:   cfg.Logging.FilePath,
+		MaxSize:    cfg.Logging.MaxSize,
+		MaxBackups: cfg.Logging.MaxBackups,
+		MaxAge:     cfg.Logging.MaxAge,
+		Compress:   cfg.Logging.Compress,
+		ServiceName: "massreg",
+	})
 	if err != nil {
-		zlog.Fatal().Err(err).Msg("Failed to initialize database")
+		log.Fatalf("Failed to init logger: %v", err)
 	}
-	defer db.Close()
+	zlog := logger.GetDefault().WithService("massreg")
+	zlog.Info("Starting MassReg service", "version", version)
 
 	// Initialize Redis cache
 	rdb, err := initRedis(cfg)
 	if err != nil {
-		zlog.Fatal().Err(err).Msg("Failed to initialize Redis")
+		zlog.Fatal(err, "Failed to initialize Redis")
 	}
-	defer rdb.Close()
+	if rdb != nil {
+		defer rdb.Close()
+	}
 
 	// Initialize SMS service
-	smsService := sms.NewService(&cfg.SMS, rdb)
-
-	// Initialize Proxy service
-	proxyService := proxy.NewPoolManager(&cfg.Proxy, rdb)
-	if err := proxyService.StartHealthChecker(); err != nil {
-		zlog.Warn().Err(err).Msg("Proxy health checker failed to start")
+	smsService, err := sms.NewSMSClient(cfg.SMS, zlog)
+	if err != nil {
+		zlog.Fatal(err, "Failed to initialize SMS client")
 	}
 
-	// Initialize ML service
-	var mlService *ml.Service
-	if cfg.ML.Enabled {
-		mlService = ml.NewService(&cfg.ML, rdb)
-		if err := mlService.LoadModel(); err != nil {
-			zlog.Warn().Err(err).Msg("Failed to load ML model, starting without it")
-		}
+	// Initialize Proxy service
+	proxyService, err := proxy.NewProxyManager(cfg.Proxy, zlog)
+	if err != nil {
+		zlog.Fatal(err, "Failed to initialize proxy manager")
+	}
+	if err := proxyService.StartHealthChecker(); err != nil {
+		zlog.Warn("Proxy health checker failed to start", "error", err)
 	}
 
 	// Initialize Registration service
-	regService := registration.NewService(
-		&cfg.Worker,
-		smsService,
+	regService, err := registration.NewRegistrationService(
+		cfg.Services,
 		proxyService,
-		mlService,
-		db,
-		rdb,
+		smsService,
+		zlog,
 	)
+	if err != nil {
+		zlog.Fatal(err, "Failed to initialize registration service")
+	}
 
 	// Setup Gin router
 	gin.SetMode(gin.ReleaseMode)
@@ -139,7 +130,7 @@ func main() {
 			c.JSON(http.StatusOK, gin.H{"count": len(proxies), "proxies": proxies})
 		})
 
-		api.POST "/workers/start", func(c *gin.Context) {
+		api.POST("/workers/start", func(c *gin.Context) {
 			var req struct {
 				Total int `json:"total"`
 			}
@@ -175,18 +166,18 @@ func main() {
 
 	// Start server in goroutine
 	go func() {
-		zlog.Info().Int("port", cfg.Server.Port).Msg("HTTP server started")
+		zlog.Info("HTTP server started", "port", cfg.Server.Port)
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			zlog.Fatal().Err(err).Msg("HTTP server failed")
+			zlog.Fatal(err, "HTTP server failed")
 		}
 	}()
 
 	// Start worker pool if configured
-	if cfg.Worker.Threads > 0 {
-		zlog.Info().Int("threads", cfg.Worker.Threads).Msg("Starting worker pool")
-		for i := 0; i < cfg.Worker.Threads; i++ {
+	if cfg.Worker.PoolSize > 0 {
+		zlog.Info("Starting worker pool", "pool_size", cfg.Worker.PoolSize)
+		for i := 0; i < cfg.Worker.PoolSize; i++ {
 			go func(workerID int) {
-				zlog.Info().Int("worker_id", workerID).Msg("Worker started")
+				zlog.Info("Worker started", "worker_id", workerID)
 				for {
 					select {
 					case <-time.After(1 * time.Second):
@@ -203,28 +194,17 @@ func main() {
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	<-quit
 
-	zlog.Info().Msg("Shutting down server...")
+	zlog.Info("Shutting down server...")
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
 	if err := srv.Shutdown(ctx); err != nil {
-		zlog.Fatal().Err(err).Msg("Server forced to shutdown")
+		zlog.Fatal(err, "Server forced to shutdown")
 	}
 
 	proxyService.Stop()
-	zlog.Info().Msg("MassReg service stopped")
-}
-
-func initDatabase(cfg *config.Config) (*repository.Database, error) {
-	switch cfg.Database.Type {
-	case "postgres":
-		return repository.NewPostgresDB(cfg.Database.PostgresURL)
-	case "sqlite":
-		return repository.NewSQLiteDB(cfg.Database.SQLitePath)
-	default:
-		return nil, fmt.Errorf("unsupported database type: %s", cfg.Database.Type)
-	}
+	zlog.Info("MassReg service stopped")
 }
 
 func initRedis(cfg *config.Config) (*redis.Client, error) {
@@ -234,10 +214,10 @@ func initRedis(cfg *config.Config) (*redis.Client, error) {
 		return nil, nil
 	}
 
-	rdb := redis.NewClusterClient(&redis.ClusterOptions{
-		Addrs:     cfg.Redis.Addrs,
-		Password:  cfg.Redis.Password,
-		PoolSize:  cfg.Redis.PoolSize,
+	rdb := redis.NewClient(&redis.Options{
+		Addr:     cfg.Redis.Addrs[0],
+		Password: cfg.Redis.Password,
+		PoolSize: cfg.Redis.PoolSize,
 	})
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

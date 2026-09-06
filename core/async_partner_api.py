@@ -32,7 +32,7 @@ class AsyncPartnerAPI:
             service: str = "Microsoft",
             country: str = "all",
             max_price: float = 0,
-            timeout: int = 20,
+            timeout: int = 30,
             proxy_manager=None,
             verify_ssl: bool = False,
     ):

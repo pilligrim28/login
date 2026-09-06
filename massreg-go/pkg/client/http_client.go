@@ -373,8 +373,7 @@ func (c *HTTPClient) GetMetrics() *Metrics {
 	c.metrics.mu.RLock()
 	defer c.metrics.mu.RUnlock()
 	
-	metrics := *c.metrics
-	return &metrics
+	return c.metrics
 }
 
 // Close closes the HTTP client and releases resources

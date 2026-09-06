@@ -41,6 +41,7 @@ class AsyncWorker:
         self.api_key = config.get("sms.api_key", "")
         self.partner_url = config.get("sms.partner_url", "")
         self.base_url = config.get("sms.api_url", "")
+        self.timeout = config.get("sms.timeout", 30)
         self.min_balance = float(config.get("worker.min_balance", 20))
         self.max_concurrency = int(config.get("worker.threads", 10))
         self.services = self._load_services()
@@ -112,6 +113,7 @@ class AsyncWorker:
             api_key=self.api_key,
             base_url=self.partner_url or self.base_url or None,
             service=self.services[0] if self.services else "Microsoft",
+            timeout=self.timeout,
             proxy_manager=self.proxy_manager,
         ) as sms:
             while not self._stop_flag:

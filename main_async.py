@@ -55,10 +55,12 @@ async def check_setup(config: Config) -> bool:
         return False
 
     base_url = config.get("sms.api_url", "")
+    timeout = config.get("sms.timeout", 30)
     
     async with AsyncSMSActivate(
         api_key,
-        base_url=base_url or None
+        base_url=base_url or None,
+        timeout=timeout
     ) as sms:
         balance = await sms.get_balance()
         if balance is not None:

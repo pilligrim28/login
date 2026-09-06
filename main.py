@@ -56,7 +56,8 @@ def check_setup(config: Config) -> bool:
 
     pm = ProxyManager(config)
     base_url = config.get("sms.partner_url", "")
-    sms = PartnerAPI(api_key, base_url=base_url or None, proxy_manager=pm)
+    timeout = config.get("sms.timeout", 30)
+    sms = PartnerAPI(api_key, base_url=base_url or None, timeout=timeout, proxy_manager=pm)
     balance = sms.get_balance()
     if balance is not None:
         log.success(f"Баланс SMS-Activate: {balance:.2f} ₽")
@@ -141,9 +142,10 @@ async def async_check_setup(config: Config) -> bool:
         return False
 
     base_url = config.get("sms.api_url", "")
+    timeout = config.get("sms.timeout", 30)
 
     from core.sms_async import AsyncSMSActivate
-    async with AsyncSMSActivate(api_key, base_url=base_url or None) as sms:
+    async with AsyncSMSActivate(api_key, base_url=base_url or None, timeout=timeout) as sms:
         balance = await sms.get_balance()
         if balance is not None:
             log.success(f"Баланс SMS-Activate: {balance:.2f} ₽")

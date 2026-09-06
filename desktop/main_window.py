@@ -411,11 +411,12 @@ class MainWindow(QMainWindow):
 
         # Проверяем баланс
         from core.proxy_manager import ProxyManager
-        from core.sms import SMSActivate
+        from core.partner_api import PartnerAPI
         pm = ProxyManager(self.config)
-        base_url = self.config.get("sms.api_url", "")
+        base_url = self.config.get("sms.partner_url", "")
         api_key = self.config.get("sms.api_key", "")
-        sms = SMSActivate(api_key, base_url=base_url or None, proxy_manager=pm)
+        timeout = self.config.get("sms.timeout", 30)
+        sms = PartnerAPI(api_key, base_url=base_url or None, timeout=timeout, proxy_manager=pm)
         balance = sms.get_balance()
         
         if balance is None:

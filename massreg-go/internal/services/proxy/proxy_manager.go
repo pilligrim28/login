@@ -9,8 +9,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/massreg/massreg-go/internal/core/config"
-	"github.com/massreg/massreg-go/internal/core/logger"
+	"massreg/internal/core/config"
+	"massreg/internal/core/logger"
 )
 
 // ProxyStrategy represents the proxy selection strategy
@@ -404,6 +404,32 @@ func (pm *ProxyManager) GetStats() map[string]interface{} {
 		"total_failures":   totalFailures,
 		"strategy":         string(pm.strategy),
 	}
+}
+
+// GetHealthyProxies returns all healthy proxies
+func (pm *ProxyManager) GetHealthyProxies() []*ProxyInfo {
+	pm.mu.RLock()
+	defer pm.mu.RUnlock()
+
+	var healthy []*ProxyInfo
+	for _, p := range pm.proxies {
+		p.mu.RLock()
+		if p.IsAlive {
+			healthy = append(healthy, p)
+		}
+		p.mu.RUnlock()
+	}
+	return healthy
+}
+
+// StartHealthChecker starts the background health check process
+// Alias for startHealthChecker to match exported API
+func (pm *ProxyManager) StartHealthChecker() error {
+	if !pm.config.HealthCheck.Enabled {
+		return nil
+	}
+	pm.startHealthChecker()
+	return nil
 }
 
 // GetProxyURL returns the full proxy URL for use with HTTP clients

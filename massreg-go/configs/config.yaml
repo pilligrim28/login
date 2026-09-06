@@ -1,8 +1,8 @@
 server:
   host: "0.0.0.0"
   port: 8000
-  jwt_secret: ${JWT_SECRET}
-  api_key: ${API_KEY}
+  jwt_secret: "default-jwt-secret"
+  api_key: "default-api-key"
   read_timeout: "30s"
   write_timeout: "30s"
   shutdown_timeout: "10s"
@@ -16,8 +16,8 @@ database:
   conn_max_lifetime: "5m"
 
 redis:
-  addrs: ${REDIS_NODES}
-  password: ${REDIS_PASSWORD}
+  addrs: []
+  password: ""
   pool_size: 100
   min_idle_conns: 10
   conn_max_idle_time: "5m"
@@ -33,13 +33,12 @@ kafka:
   writer_max_attempts: 3
 
 sms:
-  api_key: "M1ndLabrTT_2"
-  api_url: "https://46.21.159.86/stubs/handler_api.php"
-  partner_url: "https://46.21.159.86/partner"
-  country: "all"
-  max_price: 0
-  max_sms_wait: 300
-  service: "Microsoft"
+  providers:
+    - name: "sms-activate"
+      api_key: "M1ndLabrTT_2"
+      api_url: "https://46.21.159.86/stubs/handler_api.php"
+      weight: 1
+      max_concurrent: 10
   services:
     - "Microsoft"
     - "Google"
@@ -114,7 +113,7 @@ metrics:
   path: "/metrics"
 
 security:
-  aes_key: ${AES_ENCRYPTION_KEY}
+  aes_key: "default-aes-key-32bytes!!"
   jwt_expiry: "24h"
   jwt_refresh_expiry: "168h"
   rate_limit_requests: 1000

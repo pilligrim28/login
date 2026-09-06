@@ -9,9 +9,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/massreg/massreg-go/internal/core/config"
-	"github.com/massreg/massreg-go/internal/core/logger"
-	"github.com/massreg/massreg-go/pkg/client"
+	"massreg/internal/core/config"
+	"massreg/internal/core/logger"
+	"massreg/pkg/client"
 )
 
 // Service type constants

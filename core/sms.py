@@ -52,7 +52,7 @@ class SMSActivate:
             country: str = "all",
             max_price: float = 0,
             operator: str = "",
-            timeout: int = 20,
+            timeout: int = 30,
             proxy_manager = None,
             base_url: Optional[str] = None,
             verify_ssl: bool = False

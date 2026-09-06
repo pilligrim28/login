@@ -24,6 +24,7 @@ sms:
   max_price: 0
   max_sms_wait: 300
   service: Microsoft
+  timeout: 30
   # Список сервисов для регистрации (ротация по кругу).
   # Если задан — воркер регистрирует аккаунты поочерёдно на каждом сервисе.
   # Доступны (по данным Partner API): Microsoft, Google, Apple, Snapchat,

@@ -52,7 +52,7 @@ async def startup():
     except FileNotFoundError:
         import yaml
         default = {
-            "sms": {"api_key": "", "api_url": "", "service": "Microsoft", "country": "all", "max_price": 0},
+            "sms": {"api_key": "", "api_url": "", "partner_url": "", "service": "Microsoft", "country": "all", "max_price": 0, "timeout": 30},
             "proxy": {"enabled": False, "type": "http", "proxies": [], "rotation_url": ""},
             "worker": {"threads": 5, "total_registrations": 50, "headless": True},
             "database": {"type": "sqlite", "sqlite_path": "accounts.db"},
@@ -79,12 +79,14 @@ async def health():
 @app.get("/balance")
 async def get_balance(api_key: str = Depends(get_api_key)):
     from core.proxy_manager import ProxyManager
+    from core.partner_api import PartnerAPI
     api_key_sms = config.get("sms.api_key", "")
     if not api_key_sms:
         raise HTTPException(400, "API-ключ не настроен")
     pm = ProxyManager(config)
-    base_url = config.get("sms.api_url", "")
-    sms = SMSActivate(api_key, base_url=base_url or None, proxy_manager=pm)
+    base_url = config.get("sms.partner_url", "")
+    timeout = config.get("sms.timeout", 30)
+    sms = PartnerAPI(api_key, base_url=base_url or None, timeout=timeout, proxy_manager=pm)
     balance = sms.get_balance()
     if balance is None:
         raise HTTPException(500, "Ошибка получения баланса")

@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/gin-gonic/gin"
 	"github.com/rs/zerolog"
 	"gopkg.in/natefinch/lumberjack.v2"
 )
@@ -327,4 +328,27 @@ func Error(err error, msg string, fields ...interface{}) {
 // Fatal logs a fatal message using the default logger
 func Fatal(err error, msg string, fields ...interface{}) {
 	GetDefault().Fatal(err, msg, fields...)
+}
+
+// LoggerMiddleware returns a gin middleware that logs requests
+func LoggerMiddleware() func(c *gin.Context) {
+	return func(c *gin.Context) {
+		start := time.Now()
+		path := c.Request.URL.Path
+		query := c.Request.URL.RawQuery
+
+		c.Next()
+
+		latency := time.Since(start)
+		status := c.Writer.Status()
+
+		GetDefault().Info("request",
+			"method", c.Request.Method,
+			"path", path,
+			"query", query,
+			"status", status,
+			"latency", latency,
+			"ip", c.ClientIP(),
+		)
+	}
 }

@@ -10,7 +10,6 @@ from core.database import Database
 from core.partner_api import PartnerAPI
 from core.proxy_manager import ProxyManager
 from core.services import get_registrator
-from core.sms import SMSActivate
 from core.ml_model import get_model, record_to_features, find_opportunities
 
 
@@ -35,12 +34,14 @@ class Worker:
         service = config.get("sms.service", "Microsoft")
         country = config.get("sms.country", "all")
         max_price = config.get("sms.max_price", 0)
-        self.sms = SMSActivate(
+        timeout = config.get("sms.timeout", 30)
+        self.sms = PartnerAPI(
             api_key,
             base_url=base_url or None,
             service=service,
             country=country,
             max_price=max_price,
+            timeout=timeout,
             proxy_manager=self.proxy_manager
         )
 

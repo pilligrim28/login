@@ -13,11 +13,11 @@ import (
 	"sync"
 	"time"
 
-	"github.com/massreg/massreg-go/internal/core/config"
-	"github.com/massreg/massreg-go/internal/core/logger"
-	"github.com/massreg/massreg-go/internal/services/proxy"
-	"github.com/massreg/massreg-go/internal/services/sms"
-	"github.com/massreg/massreg-go/pkg/client"
+	"massreg/internal/core/config"
+	"massreg/internal/core/logger"
+	"massreg/internal/services/proxy"
+	"massreg/internal/services/sms"
+	"massreg/pkg/client"
 )
 
 // ServiceType represents supported registration services
@@ -295,6 +295,7 @@ func (rs *RegistrationService) Register(ctx context.Context, req *RegistrationRe
 
 // registerMicrosoft registers a Microsoft/Outlook account
 func (rs *RegistrationService) registerMicrosoft(ctx context.Context, req *RegistrationRequest, proxyInfo *proxy.ProxyInfo, phoneNumber *sms.PhoneNumber) (*RegistrationResult, error) {
+	startTime := time.Now()
 	fingerprint := rs.fingerprints[ServiceMicrosoft]
 	
 	// Step 1: Get session token
@@ -351,7 +352,7 @@ func (rs *RegistrationService) registerMicrosoft(ctx context.Context, req *Regis
 		Password:    req.Password,
 		PhoneNumber: req.Email, // Microsoft uses email as primary identifier
 		Country:     req.Country,
-		ProxyUsed:   proxyInfo.URL,
+		ProxyUsed:   func() string { if proxyInfo != nil { return proxyInfo.URL }; return "" }(),
 		Duration:    time.Since(startTime),
 		Timestamp:   time.Now(),
 	}, nil
@@ -359,6 +360,7 @@ func (rs *RegistrationService) registerMicrosoft(ctx context.Context, req *Regis
 
 // registerGoogle registers a Google/Gmail account
 func (rs *RegistrationService) registerGoogle(ctx context.Context, req *RegistrationRequest, proxyInfo *proxy.ProxyInfo, phoneNumber *sms.PhoneNumber) (*RegistrationResult, error) {
+	startTime := time.Now()
 	fingerprint := rs.fingerprints[ServiceGoogle]
 	
 	// Google signup endpoint
@@ -397,7 +399,7 @@ func (rs *RegistrationService) registerGoogle(ctx context.Context, req *Registra
 		Email:       req.Email,
 		Password:    req.Password,
 		Country:     req.Country,
-		ProxyUsed:   proxyInfo.URL,
+		ProxyUsed:   func() string { if proxyInfo != nil { return proxyInfo.URL }; return "" }(),
 		Duration:    time.Since(startTime),
 		Timestamp:   time.Now(),
 	}, nil
@@ -405,6 +407,7 @@ func (rs *RegistrationService) registerGoogle(ctx context.Context, req *Registra
 
 // registerApple registers an Apple ID account
 func (rs *RegistrationService) registerApple(ctx context.Context, req *RegistrationRequest, proxyInfo *proxy.ProxyInfo, phoneNumber *sms.PhoneNumber) (*RegistrationResult, error) {
+	startTime := time.Now()
 	fingerprint := rs.fingerprints[ServiceApple]
 	
 	createURL := "https://appleid.apple.com/account/create"
@@ -442,7 +445,7 @@ func (rs *RegistrationService) registerApple(ctx context.Context, req *Registrat
 		Email:       req.Email,
 		Password:    req.Password,
 		Country:     req.Country,
-		ProxyUsed:   proxyInfo.URL,
+		ProxyUsed:   func() string { if proxyInfo != nil { return proxyInfo.URL }; return "" }(),
 		Duration:    time.Since(startTime),
 		Timestamp:   time.Now(),
 	}, nil
@@ -467,6 +470,7 @@ func (rs *RegistrationService) registerDiscord(ctx context.Context, req *Registr
 
 // genericRegister is a helper for simple registration endpoints
 func (rs *RegistrationService) genericRegister(ctx context.Context, req *RegistrationRequest, proxyInfo *proxy.ProxyInfo, phoneNumber *sms.PhoneNumber, apiURL string) (*RegistrationResult, error) {
+	startTime := time.Now()
 	fingerprint := rs.fingerprints[req.Service]
 	
 	payload := map[string]interface{}{
@@ -504,7 +508,7 @@ func (rs *RegistrationService) genericRegister(ctx context.Context, req *Registr
 		Email:       req.Email,
 		Password:    req.Password,
 		Country:     req.Country,
-		ProxyUsed:   proxyInfo.URL,
+		ProxyUsed:   func() string { if proxyInfo != nil { return proxyInfo.URL }; return "" }(),
 		Duration:    time.Since(startTime),
 		Timestamp:   time.Now(),
 	}, nil
@@ -561,7 +565,7 @@ func (rs *RegistrationService) generatePassword() string {
 }
 
 // createFailureResult creates a failure result
-func (rs *RegistrationService) createFailureResult(req *RegistrationRequest, email, errorCode, errorMessage string, startTime time.Time) *RegistrationResult {
+func (rs *RegistrationService) createFailureResult(req *RegistrationRequest, email, errorCode, errorMessage string, startTime time.Time) (*RegistrationResult, error) {
 	return &RegistrationResult{
 		Success:      false,
 		Service:      req.Service,
@@ -570,7 +574,7 @@ func (rs *RegistrationService) createFailureResult(req *RegistrationRequest, ema
 		ErrorMessage: errorMessage,
 		Duration:     time.Since(startTime),
 		Timestamp:    time.Now(),
-	}
+	}, nil
 }
 
 // GetStats returns registration service statistics
@@ -610,5 +614,8 @@ func (rs *RegistrationService) Close() {
 	}
 }
 
-// Helper variable for startTime in results
-var startTime = time.Now()
+// ProcessNextTask processes the next registration task from the queue
+func (rs *RegistrationService) ProcessNextTask(ctx context.Context) {
+	// Placeholder: in a full implementation, this would dequeue and process tasks
+	rs.logger.Debug("processing next task")
+}

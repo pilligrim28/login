@@ -78,6 +78,7 @@ class Config:
             "worker.retry_count": (int, "worker.retry_count должен быть целым числом"),
             "sms.max_price": ((int, float), "sms.max_price должен быть числом"),
             "sms.max_sms_wait": (int, "sms.max_sms_wait должен быть целым числом"),
+            "sms.timeout": ((int, float), "sms.timeout должен быть числом"),
             "proxy.enabled": (bool, "proxy.enabled должен быть булевым значением"),
         }
 
