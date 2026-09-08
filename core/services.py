@@ -10,28 +10,15 @@ from typing import Optional, Dict, Callable
 from .registrator import (
     BaseRegistrator,
     MicrosoftRegistrator,
-    GoogleRegistrator,
-    AppleRegistrator,
-    SnapchatRegistrator,
-    InstagramRegistrator,
-    FacebookRegistrator,
-    DiscordRegistrator,
 )
 
 
 # Имя сервиса -> класс регистратора.
 # Ключи соответствуют как ``sms.service``/``sms.services`` в config.yaml,
-# так и коротким кодам Partner API (например ``wx`` для Apple).
+# так и коротким кодам Partner API (например ``mm`` для Microsoft).
 REGISTRATORS: Dict[str, type] = {
     "Microsoft": MicrosoftRegistrator,
     "Outlook": MicrosoftRegistrator,
-    "Google": GoogleRegistrator,
-    "Gmail": GoogleRegistrator,
-    "Apple": AppleRegistrator,
-    "Snapchat": SnapchatRegistrator,
-    "Instagram": InstagramRegistrator,
-    "Facebook": FacebookRegistrator,
-    "Discord": DiscordRegistrator,
 }
 
 # Короткий код Partner API -> класс регистратора.
@@ -63,12 +50,6 @@ def get_registrator_class(service_name: str) -> Optional[type]:
 # Канонические (отображаемые) имена сервисов в порядке для UI.
 CANONICAL_SERVICES = [
     "Microsoft",
-    "Google",
-    "Apple",
-    "Snapchat",
-    "Instagram",
-    "Facebook",
-    "Discord",
 ]
 
 

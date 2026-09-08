@@ -1,53 +1,42 @@
 database:
-  postgres_url: postgresql://user:pass@localhost:5432/massreg
-  sqlite_path: accounts.db
   type: sqlite
+  sqlite_path: accounts.db
+  postgres_url: postgresql://user:pass@localhost:5432/massreg
+
 proxy:
-  dead_timeout: 300
   enabled: true
-  iproyal_api_key: ''
-  iproyal_country: all
-  iproyal_length: 30
-  mode: static
-  proxies:
-  - 92.204.164.15:9000:a995a71bbb0ee8097afe633a914168e5-type-residential-country-CR:59c8d77e-4957-4af2-9058-3cac156a4e2e
-  #- 51.81.149.81:5001:gpilxiik60-residential-AD:Gjzgv4EQ07
-  #- 92.204.164.15:9000:a995a71bbb0ee8097afe633a914168e5-type-residential:59c8d77e-4957-4af2-9058-3cac156a4e2e
-  rotation_url: ''
-  strategy: round-robin
+  mode: static  # Если есть rotation_url от getproxy.pro, замените на 'rotation'
   type: http
+  dead_timeout: 300
+  strategy: round-robin
+  proxies:
+    # ЗАМЕНЕН НА АКТУАЛЬНЫЙ ПРОКСИ 
+    - "92.204.171.83:9000:a995a71bbb0ee8097afe633a914168e5-type-residential-country-CR:59c8d77e-4957-4af2-9058-3cac156a4e2e"
+    - "92.204.171.83:9000:a995a71bbb0ee8097afe633a914168e5-type-residential-country-AD:59c8d77e-4957-4af2-9058-3cac156a4e2e"
+    - "92.204.171.83:9000:a995a71bbb0ee8097afe633a914168e5-type-residential-country-BE:59c8d77e-4957-4af2-9058-3cac156a4e2e"
+    - "51.81.149.81:5001:gpilxiik60-residential-AF:Gjzgv4EQ07"
+    # Рекомендую: Добавить сюда минимум 3-5 разных прокси, чтобы round-robin реально менял IP
+
 sms:
   api_key: M1ndLabrTT_2
   api_url: https://46.21.159.86/stubs/handler_api.php
   partner_url: https://46.21.159.86/partner
+  service: Microsoft
   country: all
   max_price: 0
   max_sms_wait: 300
-  service: Microsoft
-  timeout: 30
-  # Список сервисов для регистрации (ротация по кругу).
-  # Если задан — воркер регистрирует аккаунты поочерёдно на каждом сервисе.
-  # Доступны (по данным Partner API): Microsoft, Google, Apple, Snapchat,
-  # Instagram, Facebook, Discord и др. Коды: mm, go, wx, fu, ig, fb, ds.
   services:
     - Microsoft
-    - Google
-    - Apple
-    - Snapchat
+
 worker:
-  headless: true
-  retry_count: 3
-  # Сколько разных номеров пробовать на один аккаунт, если номер
-  # оказался уже зарегистрирован на сервисе / SMS не пришло.
-  number_retries: 3
   threads: 20
   total_registrations: 100
+  headless: true
+  retry_count: 3
+  number_retries: 3  # Сколько раз менять номер+прокси при неудаче
 
-# ML-модель: обучается на истории попыток и подсказывает, какие
-# комбинации (сервис, страна, оператор, прокси) чаще дают успех.
 ml:
   model_path: ml_model.json
   learning_rate: 0.15
   l2: 0.01
-  # Минимальное число попыток в истории, чтобы модель считалась обученной.
   min_samples: 10

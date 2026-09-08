@@ -3,6 +3,7 @@
 Использует httpx.AsyncClient для асинхронных запросов.
 """
 
+import asyncio
 import httpx
 import time
 from typing import Optional, Dict, List, Any

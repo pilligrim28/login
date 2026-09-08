@@ -56,6 +56,8 @@ proxy:
   dead_timeout: 300
   proxies:
     - "92.204.164.15:9000:a995a71bbb0ee8097afe633a914168e5-type-residential-country-CR:59c8d77e-4957-4af2-9058-3cac156a4e2e"
+    - "51.81.149.81:5001:gpilxiik60-residential-AI:Gjzgv4EQ07"
+    - "92.204.171.83:9000:a995a71bbb0ee8097afe633a914168e5-type-residential-country-BE:59c8d77e-4957-4af2-9058-3cac156a4e2e"
   iproyal_api_key: ""
   iproyal_country: "all"
   iproyal_length: 30
@@ -132,10 +134,10 @@ services:
     enabled: true
     api_url: "https://appleid.apple.com/account/create"
     timeout: "30s"
-  snapchat:
-    enabled: true
-    api_url: "https://accounts.snapchat.com/accounts/signup"
-    timeout: "30s"
+  #snapchat:
+    #enabled: true
+    #api_url: "https://accounts.snapchat.com/accounts/signup"
+    #timeout: "30s" 
   instagram:
     enabled: true
     api_url: "https://www.instagram.com/accounts/emailsignup/"
