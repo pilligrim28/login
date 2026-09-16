@@ -18,6 +18,7 @@ from core.config import Config
 from core.logger import log
 from core.database import Database
 from core.sms import SMSActivate
+from core.partner_api import PartnerAPI
 from workers.worker import Worker
 
 
@@ -71,19 +72,11 @@ class MainWindow(QMainWindow):
 
     def _load_config(self) -> Config:
         try:
-            return Config("config.yaml")
+            return Config(".env")
         except FileNotFoundError:
-            # Создаем дефолтный конфиг
-            default = {
-                "sms": {"api_key": "", "api_url": "", "service": "Microsoft", "country": "all", "max_price": 0, "max_sms_wait": 300},
-                "proxy": {"enabled": False, "type": "http", "proxies": [], "rotation_url": ""},
-                "worker": {"threads": 5, "total_registrations": 50, "headless": True, "retry_count": 3},
-                "database": {"type": "sqlite", "sqlite_path": "accounts.db", "postgres_url": ""}
-            }
-            import yaml
-            with open("config.yaml", "w", encoding="utf-8") as f:
-                yaml.dump(default, f, default_flow_style=False, allow_unicode=True)
-            return Config("config.yaml")
+            config = Config()
+            config.save()
+            return config
 
     def _init_ui(self):
         self.tabs = QTabWidget()
@@ -323,7 +316,6 @@ class MainWindow(QMainWindow):
         self.country_input.setText(self.config.get("sms.country", "all"))
         self.max_price_input.setText(str(self.config.get("sms.max_price", 0)))
 
-        # Выбираем текущий сервис в комбо
         current_service = self.config.get("sms.service", "Microsoft")
         idx = self.service_combo.findText(current_service)
         if idx >= 0:
@@ -376,7 +368,12 @@ class MainWindow(QMainWindow):
         log.info("Настройки сохранены")
 
     def _check_balance(self):
-        """Проверить баланс SMS-Activate."""
+        """Проверить баланс SMS-провайдера (Partner API или SMS-Activate).
+
+        Поддерживает оба варианта: если настроен sms.partner_url, используется
+        PartnerAPI (возвращает словарь с ключами 'usd' и 'limit'). Иначе
+        используется класс SMSActivate (возвращает float или None).
+        """
         api_key = self.api_key_input.text().strip()
         if not api_key:
             QMessageBox.warning(self, "Ошибка", "Укажите API-ключ!")
@@ -384,17 +381,45 @@ class MainWindow(QMainWindow):
 
         from core.proxy_manager import ProxyManager
         pm = ProxyManager(self.config)
-        base_url = self.config.get("sms.partner_url", "")
-        sms = PartnerAPI(api_key, base_url=base_url or None, proxy_manager=pm)
+        partner_url = self.config.get("sms.partner_url", "")
+        api_url = self.config.get("sms.api_url", "")
+        timeout = self.config.get("sms.timeout", 30)
+
+        # Prefer Partner API if partner_url is configured
+        if partner_url:
+            sms = PartnerAPI(api_key, base_url=partner_url or None, timeout=timeout, proxy_manager=pm)
+            balance = sms.get_balance()
+            if balance is not None and isinstance(balance, dict):
+                usd = balance.get("usd", 0.0)
+                limit = balance.get("limit", 0.0)
+                self.balance_label.setText(f"Баланс: ${usd:.4f} (лимит ${limit:.4f})")
+                QMessageBox.information(self, "Баланс", f"Баланс: ${usd:.4f} (лимит ${limit:.4f})")
+                return
+            else:
+                self.balance_label.setText("Баланс: ошибка")
+                QMessageBox.warning(self, "Ошибка", "Не удалось получить баланс от Partner API")
+                return
+
+        # Fallback to SMS-Activate compatible API
+        from core.sms import SMSActivate
+        sms = SMSActivate(api_key, base_url=api_url or None, timeout=timeout, proxy_manager=pm)
         balance = sms.get_balance()
         if balance is not None:
-            usd = balance.get("usd", 0.0)
-            limit = balance.get("limit", 0.0)
-            self.balance_label.setText(f"Баланс: ${usd:.4f} (лимит ${limit:.4f})")
-            QMessageBox.information(self, "Баланс", f"Баланс: ${usd:.4f} (лимит ${limit:.4f})")
+            # SMSActivate.get_balance возвращает float
+            try:
+                bal = float(balance)
+            except Exception:
+                QMessageBox.warning(self, "Ошибка", "Не удалось разобрать баланс от SMS-API")
+                self.balance_label.setText("Баланс: ошибка")
+                return
+
+            # For SMS-Activate the currency is assumed to be RUB in some flows;
+            # show raw value and an approximate USD conversion if possible
+            self.balance_label.setText(f"Баланс: {bal:.2f} ₽")
+            QMessageBox.information(self, "Баланс", f"Баланс: {bal:.2f} ₽")
         else:
             self.balance_label.setText("Баланс: ошибка")
-            QMessageBox.warning(self, "Ошибка", "Не удалось получить баланс")
+            QMessageBox.warning(self, "Ошибка", "Не удалось получить баланс от SMS-API")
 
     def _start_worker(self):
         """Запустить воркер."""
@@ -423,9 +448,11 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Ошибка", "Не удалось проверить баланс SMS-Activate!")
             return
         
-        if balance < 20:
+        usd = balance.get("usd", 0.0)
+        rubles = usd * 90
+        if rubles < 20:
             QMessageBox.warning(self, "Предупреждение", 
-                              f"Недостаточно средств: {balance:.2f} ₽\n"
+                              f"Недостаточно средств: {rubles:.0f} ₽\n"
                               f"Для регистрации нужно минимум 20 ₽")
             return
 
