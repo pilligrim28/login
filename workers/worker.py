@@ -30,20 +30,36 @@ class Worker:
         self.proxy_manager = ProxyManager(config)
         
         api_key = config.get("sms.api_key", "")
-        base_url = config.get("sms.partner_url", "")
+        partner_url = config.get("sms.partner_url", "")
+        api_url = config.get("sms.api_url", "")
         service = config.get("sms.service", "Microsoft")
         country = config.get("sms.country", "all")
         max_price = config.get("sms.max_price", 0)
         timeout = config.get("sms.timeout", 30)
-        self.sms = PartnerAPI(
-            api_key,
-            base_url=base_url or None,
-            service=service,
-            country=country,
-            max_price=max_price,
-            timeout=timeout,
-            proxy_manager=self.proxy_manager
-        )
+
+        # Choose appropriate SMS client based on configuration
+        if partner_url:
+            self.sms = PartnerAPI(
+                api_key,
+                base_url=partner_url or None,
+                service=service,
+                country=country,
+                max_price=max_price,
+                timeout=timeout,
+                proxy_manager=self.proxy_manager
+            )
+        else:
+            # Fallback to SMS-Activate compatible client
+            from core.sms import SMSActivate
+            self.sms = SMSActivate(
+                api_key,
+                service=service,
+                country=country,
+                max_price=max_price,
+                timeout=timeout,
+                proxy_manager=self.proxy_manager,
+                base_url=api_url or None,
+            )
 
         # Список сервисов для регистрации (ротация).
         services = config.get("sms.services", [])
@@ -78,15 +94,30 @@ class Worker:
 
         # Проверка баланса
         balance = self.sms.get_balance()
-        if balance is not None:
+        if balance is None:
+            log.error(
+                "Не удалось получить баланс. Регистрация не запущена: "
+                "проверьте SMS__API_KEY и настройки SMS в .env."
+            )
+            if self.on_finished:
+                self.on_finished()
+            return
+
+        # Normalize balance: PartnerAPI -> dict {'usd','limit'}, SMSActivate -> float in RUB
+        if isinstance(balance, dict):
             usd = balance.get("usd", 0.0)
             limit = balance.get("limit", 0.0)
             log.info(f"Баланс Partner API: ${usd:.4f} (лимит ${limit:.4f})")
         else:
-            log.error("Не удалось получить баланс")
-            if self.on_finished:
-                self.on_finished()
-            return
+            # SMSActivate returns float (assumed RUB)
+            try:
+                bal_rub = float(balance)
+            except Exception:
+                log.error(f"Не удалось разобрать баланс: {balance}")
+                if self.on_finished:
+                    self.on_finished()
+                return
+            log.info(f"Баланс SMS-API: {bal_rub:.2f} ₽")
 
         success_count = 0
         fail_count = 0

@@ -17,8 +17,7 @@ from core.config import Config
 from core.database import Database
 from core.proxy_manager import ProxyManager
 from core.async_partner_api import AsyncPartnerAPI
-from core.services import get_registrator
-from core.registrator import MicrosoftRegistrator
+from core.services import get_async_registrator
 
 
 class AsyncWorker:
@@ -42,6 +41,9 @@ class AsyncWorker:
         self.partner_url = config.get("sms.partner_url", "")
         self.base_url = config.get("sms.api_url", "")
         self.timeout = config.get("sms.timeout", 30)
+        self.service = config.get("sms.service", "Microsoft")
+        self.country = config.get("sms.country", "all")
+        self.max_price = config.get("sms.max_price", 0)
         self.min_balance = float(config.get("worker.min_balance", 20))
         self.max_concurrency = int(config.get("worker.threads", 10))
         self.services = self._load_services()
@@ -137,10 +139,21 @@ class AsyncWorker:
                     await asyncio.sleep(30)
                     continue
 
-                usd = balance_data.get("usd", 0)
-                rubles = usd * 90  # приблизительный курс USD→RUB
-
-                log.info(f"💰 Баланс: {usd:.2f} USD (~{rubles:.0f} RUB)")
+                # Balance normalization: PartnerAPI -> dict, AsyncSMSActivate -> float (RUB)
+                if isinstance(balance_data, dict):
+                    usd = balance_data.get("usd", 0)
+                    rubles = usd * 90  # приблизительный курс USD→RUB
+                    log.info(f"💰 Баланс: {usd:.2f} USD (~{rubles:.0f} RUB)")
+                else:
+                    try:
+                        bal_rub = float(balance_data)
+                    except Exception:
+                        log.error(f"Не удалось разобрать баланс: {balance_data}")
+                        await asyncio.sleep(30)
+                        continue
+                    rubles = bal_rub
+                    usd = rubles / 90
+                    log.info(f"💰 Баланс: {rubles:.2f} RUB (~{usd:.2f} USD)")
 
                 if rubles < self.min_balance:
                     log.warning(
@@ -258,14 +271,14 @@ class AsyncWorker:
 
             try:
                 # Создаём регистратор
-                registrator = get_registrator(
+                registrator = get_async_registrator(
                     service_name=service,
                     sms=sms,
                     db=self.db,
                     proxy_manager=self.proxy_manager,
                     config=self.config,
-                    on_status=lambda s, d: self._handle_status(index, s, d),
-                    on_log=lambda msg: self._handle_log(msg),
+                    on_status=lambda s, d, _idx=index: self._handle_status(_idx, s, d),
+                    on_log=lambda msg, _idx=index: self._handle_log(_idx, msg),
                 )
 
                 # Запускаем регистрацию
@@ -289,29 +302,45 @@ class AsyncWorker:
                     self.on_log(f"[{index}] ❌ Ошибка: {e}")
                 return None
 
-    def _handle_status(self, index: int, status: str, data: dict):
+    def _handle_status(self, *args):
         """Обработка статуса из регистратора."""
+        if len(args) == 3:
+            index, status, data = args
+        elif len(args) == 4:
+            index, _total, status, data = args
+        else:
+            return
+
         if self.on_log:
             email = data.get("email", "")
             if status == "success":
-                self.on_log(f"[{index}] ✅ {email}")
+                self.on_log(f"✅ {email}")
             elif status == "failed":
-                self.on_log(f"[{index}] ❌ {email}: {data.get('error', '')}")
+                self.on_log(f"❌ {email}: {data.get('error', '')}")
             elif status == "starting":
-                self.on_log(f"[{index}] ▶️ Начало: {email}")
+                self.on_log(f"▶️ Начало: {email}")
             elif status == "waiting_sms":
                 phone = data.get("phone", "")
-                self.on_log(f"[{index}] 📱 Ожидание SMS: {phone}")
+                self.on_log(f"📱 Ожидание SMS: {phone}")
             elif status == "renting_number":
-                self.on_log(f"[{index}] 📞 Аренда номера...")
+                self.on_log("📞 Аренда номера...")
 
-    def _handle_log(self, message: str):
+    def _handle_log(self, *args):
         """Передача лога."""
-        if self.on_log:
-            try:
-                self.on_log(message)
-            except Exception:
-                pass
+        if not self.on_log:
+            return
+
+        try:
+            if len(args) == 1:
+                message = args[0]
+            elif len(args) == 2:
+                index, message = args
+                message = f"[{index}] {message}"
+            else:
+                return
+            self.on_log(message)
+        except Exception:
+            pass
 
     def get_stats(self) -> Dict:
         """Получить статистику работы."""
