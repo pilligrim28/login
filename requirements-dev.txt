@@ -13,7 +13,6 @@ mypy==1.8.0
 isort==5.13.0
 
 # Типы для аннотаций
-types-PyYAML==6.0.0
 types-psycopg2==2.9.0
 
 # Для разработки API

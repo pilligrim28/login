@@ -4,18 +4,19 @@ import pytest
 import asyncio
 import tempfile
 import os
-import yaml
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 from core.sms_async import AsyncSMSActivate
 from core.config import Config
 from core.database import Database
 from core.proxy_manager import ProxyManager
+from tests.config_helpers import write_config
 
 
 @pytest.fixture
 def temp_config():
     """Фикстура для временного конфига."""
-    with tempfile.NamedTemporaryFile(mode='w', suffix='.yaml', delete=False) as f:
+    with tempfile.NamedTemporaryFile(suffix='.env', delete=False) as f:
         config_data = {
             "sms": {
                 "api_key": "test_key_123",
@@ -38,8 +39,8 @@ def temp_config():
                 "sqlite_path": "test.db"
             }
         }
-        yaml.dump(config_data, f)
         config_path = f.name
+    write_config(Path(config_path), config_data)
     
     config = Config(config_path)
     yield config
@@ -54,7 +55,7 @@ def temp_db():
     with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
         db_path = f.name
     
-    with tempfile.NamedTemporaryFile(mode='w', suffix='.yaml', delete=False) as config_file:
+    with tempfile.NamedTemporaryFile(suffix='.env', delete=False) as config_file:
         config_data = {
             "database": {
                 "type": "sqlite",
@@ -64,8 +65,8 @@ def temp_db():
             "proxy": {"enabled": False},
             "worker": {"threads": 5}
         }
-        yaml.dump(config_data, config_file)
         config_path = config_file.name
+    write_config(Path(config_path), config_data)
     
     config = Config(config_path)
     db = Database(config)

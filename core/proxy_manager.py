@@ -188,3 +188,11 @@ class ProxyManager:
         else:
             url = f"{proxy['type']}://{proxy['server']}"
         return {"http": url, "https": url}
+
+    def get_stats(self) -> Dict[str, int]:
+        """Возвращает статистику прокси."""
+        return {
+            "total": len(self.proxies),
+            "alive": self.alive_count(),
+            "dead": len(self._dead_proxies),
+        }

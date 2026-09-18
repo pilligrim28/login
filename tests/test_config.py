@@ -3,14 +3,15 @@
 import pytest
 import tempfile
 import os
-import yaml
+from pathlib import Path
 from core.config import Config
+from tests.config_helpers import write_config
 
 
 @pytest.fixture
 def temp_config_file():
     """Фикстура для временного файла конфигурации."""
-    with tempfile.NamedTemporaryFile(mode='w', suffix='.yaml', delete=False) as f:
+    with tempfile.NamedTemporaryFile(suffix='.env', delete=False) as f:
         config_data = {
             "sms": {
                 "api_key": "test_key_123",
@@ -25,8 +26,8 @@ def temp_config_file():
                 "enabled": True
             }
         }
-        yaml.dump(config_data, f)
         config_path = f.name
+    write_config(Path(config_path), config_data)
     
     yield config_path
     
@@ -93,11 +94,10 @@ class TestConfig:
         config = Config(temp_config_file)
         
         # Изменяем файл вручную
-        with open(temp_config_file, 'r') as f:
-            data = yaml.safe_load(f)
-        data["sms"]["api_key"] = "reloaded_key"
-        with open(temp_config_file, 'w') as f:
-            yaml.dump(data, f)
+        Path(temp_config_file).write_text(
+            "SMS__API_KEY=reloaded_key\n",
+            encoding="utf-8",
+        )
         
         config.reload()
         assert config.get("sms.api_key") == "reloaded_key"
@@ -144,7 +144,7 @@ class TestConfig:
     def test_file_not_found(self):
         """Тест обработки отсутствующего файла."""
         with pytest.raises(FileNotFoundError):
-            Config("/nonexistent/path/config.yaml")
+            Config("/nonexistent/path/.env")
 
 
 class TestConfigRepr:

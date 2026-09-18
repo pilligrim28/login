@@ -11,7 +11,7 @@ from typing import Optional, Dict, Callable
 from .logger import log
 from .proxy_manager import ProxyManager
 from .database import Database
-from .sms_async import AsyncSMSActivate
+from .async_partner_api import AsyncPartnerAPI
 from .registrator_async import AsyncMicrosoftRegistrator
 
 
@@ -63,13 +63,20 @@ class MicrosoftRegistrator(BaseRegistrator):
 
     async def register(self) -> Optional[Dict]:
         api_key = getattr(self.sms, "api_key", "")
-        api_url = self.config.get("sms.api_url", None)
+        partner_url = self.config.get("sms.partner_url", None)
+        service = self.config.get("sms.service", self.SERVICE_NAME)
+        country = self.config.get("sms.country", "all")
+        max_price = self.config.get("sms.max_price", 0)
         timeout = getattr(self.sms, "timeout", 30)
 
-        sms_async = AsyncSMSActivate(
+        sms_async = AsyncPartnerAPI(
             api_key=api_key,
-            base_url=api_url,
+            base_url=partner_url,
+            service=service,
+            country=country,
+            max_price=max_price,
             timeout=timeout,
+            proxy_manager=self.proxy_manager,
         )
 
         proxy = self.proxy_manager.get_next()
@@ -85,8 +92,3 @@ class MicrosoftRegistrator(BaseRegistrator):
             )
             reg.proxy_manager.get_next = lambda: proxy
             return await reg.register()
-
-
-class SnapchatRegistrator(BaseRegistrator):
-    SERVICE_NAME = "Snapchat"
-    SMS_CODE = "fu"

@@ -55,6 +55,33 @@ class Database:
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             """)
+            conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_accounts_email ON accounts(email)
+            """)
+            conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_accounts_status ON accounts(status)
+            """)
+            conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_accounts_created_at ON accounts(created_at)
+            """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS attempts (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    service TEXT,
+                    country TEXT,
+                    operator TEXT,
+                    proxy TEXT,
+                    success INTEGER DEFAULT 0,
+                    error TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_attempts_success ON attempts(success)
+            """)
+            conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_attempts_service ON attempts(service)
+            """)
             conn.commit()
 
         from .logger import log
@@ -82,6 +109,23 @@ class Database:
                         created_at TIMESTAMP DEFAULT NOW()
                     )
                 """)
+                cur.execute("CREATE INDEX IF NOT EXISTS idx_accounts_email ON accounts(email)")
+                cur.execute("CREATE INDEX IF NOT EXISTS idx_accounts_status ON accounts(status)")
+                cur.execute("CREATE INDEX IF NOT EXISTS idx_accounts_created_at ON accounts(created_at)")
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS attempts (
+                        id SERIAL PRIMARY KEY,
+                        service TEXT,
+                        country TEXT,
+                        operator TEXT,
+                        proxy TEXT,
+                        success INTEGER DEFAULT 0,
+                        error TEXT,
+                        created_at TIMESTAMP DEFAULT NOW()
+                    )
+                """)
+                cur.execute("CREATE INDEX IF NOT EXISTS idx_attempts_success ON attempts(success)")
+                cur.execute("CREATE INDEX IF NOT EXISTS idx_attempts_service ON attempts(service)")
                 conn.commit()
 
         from .logger import log
@@ -120,12 +164,23 @@ class Database:
             if self.db_type == "sqlite":
                 with sqlite3.connect(self.sqlite_path) as conn:
                     cur = conn.execute("""
-                        INSERT OR REPLACE INTO accounts 
+                        INSERT OR IGNORE INTO accounts 
                         (email, password, phone, cookies_path, proxy, status, error)
                         VALUES (?, ?, ?, ?, ?, ?, ?)
                     """, (email, password, phone, cookies_path, proxy, status, error))
                     conn.commit()
-                    return cur.lastrowid
+                    if cur.lastrowid and cur.lastrowid != 0:
+                        return cur.lastrowid
+                    # Already exists — update it
+                    conn.execute("""
+                        UPDATE accounts SET password = ?, phone = ?, cookies_path = ?,
+                            proxy = ?, status = ?, error = ?
+                        WHERE email = ?
+                    """, (password, phone, cookies_path, proxy, status, error, email))
+                    conn.commit()
+                    cur = conn.execute("SELECT id FROM accounts WHERE email = ?", (email,))
+                    row = cur.fetchone()
+                    return row[0] if row else None
             else:
                 import psycopg2
                 with psycopg2.connect(self.pg_url) as conn:

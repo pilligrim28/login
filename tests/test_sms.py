@@ -16,7 +16,7 @@ class TestSMSActivateInit:
         assert sms.country == "all"
         assert sms.max_price == 0
         assert sms.operator == ""
-        assert sms.timeout == 20
+        assert sms.timeout == 30
         assert sms.base_url == "https://sms-activate.ru/stubs/handler_api.php"
         assert sms.verify_ssl is False
 

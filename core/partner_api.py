@@ -27,10 +27,11 @@
 можно было использовать как drop-in замену в потоке регистрации.
 """
 
-import httpx
 import random
 import time
 from typing import Optional, Dict, List, Any
+
+from curl_cffi import requests as curl_requests
 
 
 class PartnerAPI:
@@ -144,28 +145,36 @@ class PartnerAPI:
         url = f"{self.base_url}/{path.lstrip('/')}"
 
         try:
-            with httpx.Client(proxy=proxy_url, verify=self.verify_ssl) as client:
+            with curl_requests.Session(impersonate="chrome") as client:
                 response = client.get(
                     url,
                     params=params,
                     headers=request_headers,
                     timeout=self.timeout,
+                    proxy=proxy_url,
+                    verify=self.verify_ssl,
                 )
                 response.raise_for_status()
                 return response.json()
-        except httpx.TimeoutException:
+        except curl_requests.exceptions.Timeout:
             log.error("Таймаут при запросе к Partner API")
             return None
-        except httpx.ConnectError:
+        except curl_requests.exceptions.ConnectionError:
             log.error("Ошибка соединения с Partner API")
             return None
-        except httpx.HTTPStatusError as e:
+        except curl_requests.exceptions.HTTPError as e:
             body = ""
             try:
                 body = e.response.text
             except Exception:
                 pass
-            log.error(f"HTTP ошибка {e.response.status_code}: {body[:200]}")
+            if "BAD_KEY" in body:
+                log.error(
+                    "Partner API отклонил API-ключ (BAD_KEY). "
+                    "Проверьте SMS__API_KEY в .env."
+                )
+            else:
+                log.error(f"HTTP ошибка {e.response.status_code}: {body[:200]}")
             return None
         except ValueError as e:
             log.error(f"Некорректный JSON-ответ ({path}): {e}")
@@ -200,25 +209,28 @@ class PartnerAPI:
                 proxy_url = proxy_dict.get("https") or proxy_dict.get("http")
 
         request_headers = dict(headers or {})
+        request_headers.setdefault("Content-Type", "application/json")
         url = f"{self.base_url}/{path.lstrip('/')}"
 
         try:
-            with httpx.Client(proxy=proxy_url, verify=self.verify_ssl) as client:
+            with curl_requests.Session(impersonate="chrome") as client:
                 response = client.post(
                     url,
                     json=json,
                     headers=request_headers,
                     timeout=self.timeout,
+                    proxy=proxy_url,
+                    verify=self.verify_ssl,
                 )
                 response.raise_for_status()
                 return response.json()
-        except httpx.TimeoutException:
+        except curl_requests.exceptions.Timeout:
             log.error("Таймаут при запросе к Partner API")
             return None
-        except httpx.ConnectError:
+        except curl_requests.exceptions.ConnectionError:
             log.error("Ошибка соединения с Partner API")
             return None
-        except httpx.HTTPStatusError as e:
+        except curl_requests.exceptions.HTTPError as e:
             body = ""
             try:
                 body = e.response.text

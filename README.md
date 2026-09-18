@@ -6,7 +6,7 @@
 **MassReg** — инструмент для массовой регистрации аккаунтов Microsoft (Outlook) с использованием:
 - **SMS-Activate** для получения номеров телефонов и SMS-кодов
 - **Proxy** (IPRoyal, статические прокси, rotation URL) для обхода блокировок
-- **Playwright** для автоматизации браузера
+- **Camoufox + Playwright** для антидетект браузера и автоматизации
 - **SQLite/PostgreSQL** для хранения аккаунтов
 
 ## 🚀 Возможности
@@ -17,7 +17,7 @@
 - ✅ Обработка CAPTCHA (обнаружение и уведомление)
 - ✅ Хранение аккаунтов в SQLite или PostgreSQL
 - ✅ Многопоточная работа
-- ✅ CLI, GUI и REST API интерфейсы
+- ✅ CLI и GUI интерфейсы
 - ✅ Асинхронная поддержка
 - ✅ Логгирование с ротацией файлов
 - ✅ Проверка баланса перед регистрацией
@@ -41,10 +41,13 @@ pip install -r requirements.txt
 pip install -r requirements-dev.txt
 ```
 
-### Установка Playwright
+### Установка Playwright и Camoufox
 ```bash
 playwright install chromium
+camoufox fetch
 ```
+
+Если Camoufox ещё не скачан, приложение автоматически попытается выполнить `camoufox fetch` при запуске и, при необходимости, откатится на обычный Chromium.
 
 ## 🛠 Установка
 
@@ -61,108 +64,72 @@ playwright install chromium
 ```
 
 ### 3. Настройка конфигурации
-Скопируйте и отредактируйте `config.yaml`:
+Скопируйте и отредактируйте `.env`:
 ```bash
-cp config.yaml config.yaml
-nano config.yaml  # или используйте любой редактор
+cp .env.example .env
+nano .env  # или используйте любой редактор
 ```
 
-Пример конфигурации:
-```yaml
-sms:
-  api_key: "VAШ_API_КЛЮЧ_OT_SMS_ACTIVATE"
-  service: "Microsoft"
-  country: "all"
-  max_price: 0
-
-proxy:
-  enabled: true
-  type: "http"
-  proxies:
-    - "host:port:username:password"
-    - "host2:port2"
-
-worker:
-  threads: 5
-  total_registrations: 50
-  headless: true
-
-database:
-  type: "sqlite"
-  sqlite_path: "accounts.db"
+Пример переменных:
+```dotenv
+SMS__API_KEY=your-api-key
+SMS__SERVICE=Microsoft
+PROXY__ENABLED=false
+PROXY__PROXIES=[]
+WORKER__THREADS=5
+WORKER__TOTAL_REGISTRATIONS=50
 ```
 
 ## 🏃‍♂️ Запуск
 
 ### CLI интерфейс
 ```bash
+# Показать справку
+python main.py --help
+
+# Создать .env из шаблона, если файла ещё нет
+python main.py setup
+
 # Проверить настройки
-python main.py --check
+python main.py check --config .env
+
+# Показать краткий статус проекта
+python main.py status --config .env
+
+# Полная диагностика окружения и браузера
+python main.py doctor --config .env
+
+# Посмотреть последние логи
+python main.py logs --lines 100
 
 # Запустить регистрацию (синхронно)
-python main.py
+python main.py run --config .env
+
+# Запустить регистрацию через Camoufox
+python main.py run --config .env --browser camoufox
+
+# Запустить регистрацию через обычный Chromium
+python main.py run --config .env --browser chromium
 
 # Запустить регистрацию (асинхронно)
-python main_async.py
+python main.py run --config .env --async
+
+# Сгенерировать рекомендации ML
+python main.py ml-suggest --config .env
 ```
 
-### GUI интерфейс
+### GUI интерфейс (через единый entrypoint)
+```bash
+python main.py desktop
+# или короткая версия
+python main.py gui
+```
+
+Для совместимости всё ещё работает старый запуск:
 ```bash
 python desktop/run_desktop.py
 ```
 
-### REST API сервер
-```bash
-python server/run_server.py
-```
-
-API будет доступен на `http://localhost:8000`
-
-## 📡 REST API
-
-### Аутентификация
-Все запросы требуют API-ключ в заголовке:
-```
-Authorization: Bearer ВАШ_API_КЛЮЧ
-```
-
-Настройте ключ в `config.yaml`:
-```yaml
-server:
-  api_key: "ВАШ_СЕКРЕТНЫЙ_КЛЮЧ"
-```
-
-### Эндпоинты
-
-| Метод | Эндпоинт | Описание |
-|-------|----------|----------|
-| GET | `/` | Статус сервера |
-| GET | `/health` | Проверка здоровья |
-| GET | `/balance` | Получить баланс SMS-Activate |
-| GET | `/stats` | Статистика аккаунтов |
-| GET | `/accounts` | Список аккаунтов |
-| GET | `/accounts/{email}` | Получить аккаунт по email |
-| POST | `/start` | Запустить регистрацию |
-| POST | `/stop` | Остановить регистрацию |
-| GET | `/progress` | Прогресс регистрации |
-| POST | `/config/sms` | Настроить SMS |
-| POST | `/config/server` | Настроить сервер |
-| DELETE | `/accounts/{id}` | Удалить аккаунт |
-| POST | `/clear-accounts` | Очистить все аккаунты |
-
-### Примеры запросов
-
-**Получить баланс:**
-```bash
-curl -H "Authorization: Bearer ВАШ_API_КЛЮЧ" http://localhost:8000/balance
-```
-
-**Запустить регистрацию:**
-```bash
-curl -X POST -H "Authorization: Bearer ВАШ_API_КЛЮЧ" \
-  -H "Content-Type: application/json" \
-  -d '{"total": 100, "threads": 10}' \
-  http://localhost:8000/start
 ```
 
 **Получить статистику:**
@@ -196,6 +163,19 @@ curl -H "Authorization: Bearer ВАШ_API_КЛЮЧ" http://localhost:8000/stats
 | `iproyal_country` | Страна для IPRoyal | `"all"` |
 | `iproyal_length` | Длина сессии IPRoyal | `30` (минуты) |
 
+### Параметры Camoufox
+
+| Параметр | Описание | Значение по умолчанию |
+|----------|----------|----------------------|
+| `enabled` | Использовать Camoufox вместо стандартного Chromium | `true` |
+| `headless` | Запускать браузер в headless режиме | `true` |
+| `locale` | Локаль браузера | `"ru-RU"` |
+| `timezone_id` | Часовой пояс | `"Europe/Moscow"` |
+| `viewport_width` | Ширина окна | `1366` |
+| `viewport_height` | Высота окна | `768` |
+| `persistent_context` | Переиспользовать persistent context | `false` |
+| `debug` | Включить debug режим Camoufox | `false` |
+
 ### Параметры воркера
 
 | Параметр | Описание | Значение по умолчанию |
@@ -216,10 +196,9 @@ curl -H "Authorization: Bearer ВАШ_API_КЛЮЧ" http://localhost:8000/stats
 ## 🔧 Решение проблем
 
 ### Ошибка: "API-ключ не настроен"
-Убедитесь, что вы указали правильный API-ключ от SMS-Activate в `config.yaml`:
-```yaml
-sms:
-  api_key: "ВАШ_API_КЛЮЧ"
+Убедитесь, что вы указали правильный API-ключ от SMS-Activate в `.env`:
+```dotenv
+SMS__API_KEY=ВАШ_API_КЛЮЧ
 ```
 
 ### Ошибка: "Недостаточно средств"
@@ -244,14 +223,13 @@ Microsoft может требовать ввод CAPTCHA. В текущей ве
 
 ### Массовая регистрация 100 аккаунтов
 ```bash
-python main.py --config config.yaml
+python main.py --config .env
 ```
 
 С конфигурацией:
-```yaml
-worker:
-  total_registrations: 100
-  threads: 10
+```dotenv
+WORKER__TOTAL_REGISTRATIONS=100
+WORKER__THREADS=10
 ```
 
 ### Проверка настройки
@@ -269,11 +247,6 @@ python main_async.py
 python desktop/run_desktop.py
 ```
 
-### Запуск REST API сервера
-```bash
-python server/run_server.py
-```
-
 ## 🐳 Docker
 
 ### Сборка образа
@@ -284,7 +257,7 @@ docker build -t massreg .
 ### Запуск контейнера
 ```bash
 docker run -it --rm \
-  -v $(pwd)/config.yaml:/app/config.yaml \
+  -v $(pwd)/.env:/app/.env \
   -v $(pwd)/accounts.db:/app/accounts.db \
   massreg python main.py --check
 ```

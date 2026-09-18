@@ -11,14 +11,21 @@ from .registrator import (
     BaseRegistrator,
     MicrosoftRegistrator,
 )
+from .registrator_async_wrapper import MicrosoftAsyncRegistrator
 
 
-# Имя сервиса -> класс регистратора.
-# Ключи соответствуют как ``sms.service``/``sms.services`` в config.yaml,
+# Имя сервиса -> класс синхронного регистратора.
+# Ключи соответствуют как ``sms.service``/``sms.services`` в .env,
 # так и коротким кодам Partner API (например ``mm`` для Microsoft).
 REGISTRATORS: Dict[str, type] = {
     "Microsoft": MicrosoftRegistrator,
     "Outlook": MicrosoftRegistrator,
+}
+
+# Имя сервиса -> класс асинхронного регистратора.
+ASYNC_REGISTRATORS: Dict[str, type] = {
+    "Microsoft": MicrosoftAsyncRegistrator,
+    "Outlook": MicrosoftAsyncRegistrator,
 }
 
 # Короткий код Partner API -> класс регистратора.
@@ -26,10 +33,15 @@ REGISTRATORS_BY_CODE: Dict[str, type] = {
     cls.SMS_CODE: cls for cls in REGISTRATORS.values()
 }
 
+# Короткий код Partner API -> класс асинхронного регистратора.
+ASYNC_REGISTRATORS_BY_CODE: Dict[str, type] = {
+    cls.SMS_CODE: cls for cls in ASYNC_REGISTRATORS.values()
+}
+
 
 def get_registrator_class(service_name: str) -> Optional[type]:
     """
-    Получить класс регистратора по имени сервиса или коду.
+    Получить класс синхронного регистратора по имени сервиса или коду.
 
     Args:
         service_name: Имя сервиса (Microsoft, Google, ...) или код (mm, go, ...).
@@ -44,6 +56,20 @@ def get_registrator_class(service_name: str) -> Optional[type]:
         REGISTRATORS.get(key)
         or REGISTRATORS.get(key.capitalize())
         or REGISTRATORS_BY_CODE.get(key)
+    )
+
+
+def get_async_registrator_class(service_name: str) -> Optional[type]:
+    """
+    Получить класс асинхронного регистратора по имени сервиса или коду.
+    """
+    if not service_name:
+        return None
+    key = str(service_name).strip()
+    return (
+        ASYNC_REGISTRATORS.get(key)
+        or ASYNC_REGISTRATORS.get(key.capitalize())
+        or ASYNC_REGISTRATORS_BY_CODE.get(key)
     )
 
 
@@ -76,11 +102,13 @@ def get_registrator(
         on_log: Optional[Callable] = None,
 ) -> BaseRegistrator:
     """
-    Создать экземпляр регистратора для указанного сервиса.
+    Создать экземпляр СИНХРОННОГО регистратора для указанного сервиса.
+
+    Используется в Worker (ThreadPoolExecutor).
 
     Args:
         service_name: Имя сервиса (Microsoft, Google, ...) или код (mm, go, ...).
-        sms: Клиент Partner API.
+        sms: Клиент Partner API (синхронный).
         db: База данных.
         proxy_manager: Менеджер прокси.
         config: Конфигурация.
@@ -88,7 +116,7 @@ def get_registrator(
         on_log: Колбэк логов.
 
     Returns:
-        Экземпляр регистратора.
+        Экземпляр синхронного регистратора.
 
     Raises:
         ValueError: если сервис не поддерживается.
@@ -97,6 +125,55 @@ def get_registrator(
     if cls is None:
         supported = ", ".join(sorted(set(
             n for n in REGISTRATORS
+            if n[0].isupper()
+        )))
+        raise ValueError(
+            f"Сервис '{service_name}' не поддерживается. Доступно: {supported}"
+        )
+
+    return cls(
+        sms=sms,
+        db=db,
+        proxy_manager=proxy_manager,
+        config=config,
+        on_status=on_status,
+        on_log=on_log,
+    )
+
+
+def get_async_registrator(
+        service_name: str,
+        sms,
+        db,
+        proxy_manager,
+        config,
+        on_status: Optional[Callable] = None,
+        on_log: Optional[Callable] = None,
+):
+    """
+    Создать экземпляр АСИНХРОННОГО регистратора для указанного сервиса.
+
+    Используется в AsyncWorker (event loop).
+
+    Args:
+        service_name: Имя сервиса (Microsoft, Google, ...) или код (mm, go, ...).
+        sms: Асинхронный клиент SMS (AsyncSMSActivate / AsyncPartnerAPI).
+        db: База данных.
+        proxy_manager: Менеджер прокси.
+        config: Конфигурация.
+        on_status: Колбэк статуса.
+        on_log: Колбэк логов.
+
+    Returns:
+        Экземпляр асинхронного регистратора.
+
+    Raises:
+        ValueError: если сервис не поддерживается.
+    """
+    cls = get_async_registrator_class(service_name)
+    if cls is None:
+        supported = ", ".join(sorted(set(
+            n for n in ASYNC_REGISTRATORS
             if n[0].isupper()
         )))
         raise ValueError(

@@ -1,0 +1,1 @@
+"""MassReg workers module."""

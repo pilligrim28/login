@@ -1,4 +1,3 @@
-```
 # Compiled and build artifacts
 *.o
 *.obj
@@ -15,10 +14,30 @@ vendor/
 .env
 .env.local
 .env.*
+!.env.example
+
+# Database files
+*.db
+*.sqlite
+*.sqlite3
+accounts.db
+test.db
+
+# Test files
+test.py
+test.db
 
 # Editors
 .vscode/
 .idea/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+*.egg
 
 # Go-specific
 *.exe
@@ -29,4 +48,7 @@ vendor/
 *.test
 *.prof
 cover.out
-```
+
+# Camoufox / browser profiles
+camoufox_profiles/
+cookies/

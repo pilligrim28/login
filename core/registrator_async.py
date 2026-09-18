@@ -14,10 +14,14 @@ import asyncio
 import json
 import os
 import random
+import shutil
 import string
+import subprocess
+import sys
 from typing import Optional, Dict, Callable, Tuple
 
 from playwright.async_api import async_playwright, Page, BrowserContext, Browser
+from camoufox.async_api import AsyncCamoufox
 
 from .logger import log
 from .sms_async import AsyncSMSActivate
@@ -74,6 +78,7 @@ class AsyncMicrosoftRegistrator:
         self._browser = None
         self._context = None
         self._page = None
+        self._camoufox = None
         self._playwright = None
 
     async def __aenter__(self):
@@ -90,15 +95,64 @@ class AsyncMicrosoftRegistrator:
             await self._page.close()
         if self._context:
             await self._context.close()
-        if self._browser:
+
+        if self._camoufox:
+            await self._camoufox.__aexit__(None, None, None)
+        elif self._browser:
             await self._browser.close()
+
         if self._playwright:
             await self._playwright.stop()
-        
+
         self._page = None
         self._context = None
         self._browser = None
+        self._camoufox = None
         self._playwright = None
+
+    @staticmethod
+    def _resolve_camoufox_cli() -> Optional[str]:
+        """Найти исполняемый файл Camoufox в текущем окружении."""
+        candidates = [
+            shutil.which("camoufox"),
+            os.path.join(os.path.dirname(sys.executable), "camoufox"),
+            os.path.join(os.path.dirname(sys.executable), "camoufox.exe"),
+        ]
+        for candidate in candidates:
+            if candidate and os.path.exists(candidate):
+                return candidate
+        return None
+
+    def _ensure_camoufox_runtime(self) -> bool:
+        """Убедиться, что Camoufox runtime установлен и готов к запуску."""
+        cli_path = self._resolve_camoufox_cli()
+        if not cli_path:
+            log.warning("Camoufox CLI не найден в окружении. Используется Chromium fallback.")
+            return False
+
+        log.info("Проверка/установка Camoufox runtime...")
+        try:
+            result = subprocess.run(
+                [cli_path, "fetch"],
+                capture_output=True,
+                text=True,
+                cwd=os.getcwd(),
+                timeout=600,
+                check=False,
+            )
+        except (subprocess.SubprocessError, OSError, ValueError) as exc:
+            log.warning(f"Не удалось запустить camoufox fetch: {exc}")
+            return False
+
+        output = "\n".join(part for part in (result.stdout, result.stderr) if part).strip()
+        if result.returncode == 0:
+            log.info("Camoufox runtime успешно установлен.")
+            return True
+
+        if output:
+            log.warning(output[:2000])
+        log.warning("Camoufox runtime недоступен. Используется Chromium fallback.")
+        return False
 
     # ============================================
     # КОЛБЭКИ
@@ -216,38 +270,112 @@ class AsyncMicrosoftRegistrator:
     # ============================================
 
     async def _launch_browser(self, proxy: Optional[dict] = None) -> Tuple[Browser, BrowserContext]:
-        """Запустить браузер с прокси."""
+        """Запустить браузер через Camoufox с возможностью отката к обычному Chromium.
+
+        FIX #37: proxy передаётся ТОЛЬКО в AsyncCamoufox. new_context() — без proxy.
+        FIX #39: persistent_context не используется (всегда создаём новый контекст).
+        """
+        browser_backend = str(self.config.get("browser.backend", self.config.get("camoufox.enabled", True) and "camoufox" or "chromium")).strip().lower()
+        if browser_backend not in {"camoufox", "chromium"}:
+            browser_backend = "camoufox" if self.config.get("camoufox.enabled", True) else "chromium"
+        use_camoufox = browser_backend == "camoufox"
+        headless = self.config.get("camoufox.headless", self.config.get("worker.headless", True))
+        locale = self.config.get("camoufox.locale", "ru-RU")
+        timezone_id = self.config.get("camoufox.timezone_id", "Europe/Moscow")
+        viewport_width = self.config.get("camoufox.viewport_width", 1366)
+        viewport_height = self.config.get("camoufox.viewport_height", 768)
+        user_agent = self.config.get(
+            "camoufox.user_agent",
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+        )
+        debug = self.config.get("camoufox.debug", False)
+
+        # ---- Формируем proxy_config ----
+        proxy_config = None
+        if proxy:
+            ptype = (proxy.get("type") or "http").lower()
+            server = proxy["server"]
+            if ptype.startswith("socks"):
+                server = f"{ptype}://{server}"
+            else:
+                server = f"http://{server}"
+            proxy_config = {"server": server}
+            if proxy.get("username"):
+                proxy_config["username"] = proxy["username"]
+                proxy_config["password"] = proxy.get("password", "")
+            log.info(f"🌐 Camoufox proxy_config: {proxy_config}")
+
+        # ---- Camoufox ----
+        if use_camoufox:
+            if not self._ensure_camoufox_runtime():
+                log.warning("Camoufox runtime не готов, откат на Chromium.")
+                use_camoufox = False
+
+        if use_camoufox:
+            # proxy — ТОЛЬКО здесь, в AsyncCamoufox. new_context() — БЕЗ proxy.
+            camoufox_kwargs = {
+                "headless": headless,
+                "debug": debug,
+                "humanize": True,
+                "geoip": True,
+            }
+            if proxy_config:
+                camoufox_kwargs["proxy"] = proxy_config
+
+            try:
+                self._camoufox = AsyncCamoufox(**camoufox_kwargs)
+                self._browser = await self._camoufox.__aenter__()
+                # new_context БЕЗ proxy — Camoufox уже знает про прокси
+                self._context = await self._browser.new_context(
+                    viewport={"width": viewport_width, "height": viewport_height},
+                    locale=locale,
+                    timezone_id=timezone_id,
+                    user_agent=user_agent,
+                )
+                return self._browser, self._context
+            except Exception as exc:
+                message = str(exc)
+                log.error(f"❌ Camoufox launch failed: {message}")
+                log.error(f"   proxy: {proxy_config}")
+                import traceback
+                log.error(traceback.format_exc())
+                if "not installed" in message.lower() or "camoufox fetch" in message.lower():
+                    if self._ensure_camoufox_runtime():
+                        try:
+                            self._camoufox = AsyncCamoufox(**camoufox_kwargs)
+                            self._browser = await self._camoufox.__aenter__()
+                            self._context = await self._browser.new_context(
+                                viewport={"width": viewport_width, "height": viewport_height},
+                                locale=locale,
+                                timezone_id=timezone_id,
+                                user_agent=user_agent,
+                            )
+                            return self._browser, self._context
+                        except Exception as e:
+                            log.error(f"❌ Camoufox retry failed: {e}")
+                log.warning("Camoufox не запустился, откат на Chromium.")
+                use_camoufox = False
+
+        # ---- Chromium (fallback) ----
         launch_options = {
-            "headless": self.config.get("worker.headless", True),
+            "headless": headless,
             "args": [
                 "--no-sandbox",
                 "--disable-dev-shm-usage",
-                "--disable-blink-features=AutomationControlled"
-            ]
+                "--disable-blink-features=AutomationControlled",
+            ],
         }
-
-        if proxy:
-            launch_options["proxy"] = {
-                "server": f"{proxy.get('type', 'http')}://{proxy['server']}"
-            }
-            if proxy.get("username"):
-                launch_options["proxy"]["username"] = proxy["username"]
-                launch_options["proxy"]["password"] = proxy.get("password", "")
+        if proxy_config:
+            launch_options["proxy"] = proxy_config
 
         self._playwright = await async_playwright().start()
         self._browser = await self._playwright.chromium.launch(**launch_options)
-
         self._context = await self._browser.new_context(
-            viewport={"width": 1366, "height": 768},
-            locale="ru-RU",
-            timezone_id="Europe/Moscow",
-            user_agent=(
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/124.0.0.0 Safari/537.36"
-            )
+            viewport={"width": viewport_width, "height": viewport_height},
+            locale=locale,
+            timezone_id=timezone_id,
+            user_agent=user_agent,
         )
-
         return self._browser, self._context
 
     async def _click_next(self, page: Page) -> bool:
@@ -544,6 +672,17 @@ class AsyncMicrosoftRegistrator:
             return None
 
         except Exception as e:
+            # Попытка пометить прокси как мёртвый, если ошибка связана с прокси/соединением
+            try:
+                if 'proxy' in str(e).lower() or 'ns_error' in str(e).lower() or 'connection' in str(e).lower():
+                    if 'proxy' in locals() and proxy:
+                        try:
+                            self.proxy_manager.mark_dead(proxy)
+                            log.info("Прокси помечен как мёртвый из-за ошибки")
+                        except Exception:
+                            log.debug("Не удалось пометить прокси как мёртвый")
+            except Exception:
+                pass
             self._callback_status("error", {"email": email, "error": str(e)})
             self._callback_log(f"❌ Ошибка: {e}")
             log.error(f"Исключение при регистрации {email}: {e}")

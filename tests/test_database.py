@@ -3,9 +3,10 @@
 import pytest
 import tempfile
 import os
-import yaml
+from pathlib import Path
 from core.database import Database
 from core.config import Config
+from tests.config_helpers import write_config
 
 
 @pytest.fixture
@@ -15,7 +16,7 @@ def temp_db():
         db_path = f.name
     
     # Создаем временный конфиг
-    with tempfile.NamedTemporaryFile(mode='w', suffix='.yaml', delete=False) as config_file:
+    with tempfile.NamedTemporaryFile(suffix='.env', delete=False) as config_file:
         config_data = {
             "database": {
                 "type": "sqlite",
@@ -25,8 +26,8 @@ def temp_db():
             "proxy": {"enabled": False},
             "worker": {"threads": 5}
         }
-        yaml.dump(config_data, config_file)
         config_path = config_file.name
+    write_config(Path(config_path), config_data)
     
     config = Config(config_path)
     db = Database(config)
@@ -42,15 +43,15 @@ def temp_db():
 @pytest.fixture
 def temp_config():
     """Фикстура для временного конфига."""
-    with tempfile.NamedTemporaryFile(mode='w', suffix='.yaml', delete=False) as f:
+    with tempfile.NamedTemporaryFile(suffix='.env', delete=False) as f:
         config_data = {
             "sms": {"api_key": ""},
             "proxy": {"enabled": False},
             "worker": {"threads": 5},
             "database": {"type": "sqlite"}
         }
-        yaml.dump(config_data, f)
         config_path = f.name
+    write_config(Path(config_path), config_data)
     
     config = Config(config_path)
     yield config
@@ -179,6 +180,6 @@ class TestDatabaseIndexes:
                 indexes = cursor.fetchall()
                 
                 index_names = [idx[1] for idx in indexes]
-                assert "idx_email" in index_names
-                assert "idx_status" in index_names
-                assert "idx_created_at" in index_names
+                assert "idx_accounts_email" in index_names
+                assert "idx_accounts_status" in index_names
+                assert "idx_accounts_created_at" in index_names

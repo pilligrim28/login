@@ -36,6 +36,18 @@ class AsyncPartnerAPI:
             proxy_manager=None,
             verify_ssl: bool = False,
     ):
+        # FIX BUG #1: сохраняем параметры как публичные атрибуты,
+        # чтобы обёртки (registrator.py, registrator_async_wrapper.py)
+        # могли читать их через getattr(self.sms, "api_key", "") и т.д.
+        self.api_key = api_key
+        self.base_url = base_url or PartnerAPI.BASE_URL
+        self.service = service
+        self.country = country
+        self.max_price = max_price
+        self.timeout = timeout
+        self.proxy_manager = proxy_manager
+        self.verify_ssl = verify_ssl
+
         self._sync_api = PartnerAPI(
             api_key=api_key,
             base_url=base_url,
@@ -198,14 +210,15 @@ class AsyncPartnerAPI:
 
     def reset(self, **kwargs):
         """Пересоздать синхронный API с новыми параметрами."""
-        if kwargs:
-            self._sync_api = PartnerAPI(
-                api_key=self._sync_api.api_key,
-                base_url=kwargs.get("base_url", self._sync_api.base_url),
-                service=kwargs.get("service", self._sync_api.service),
-                country=kwargs.get("country", self._sync_api.country),
-                max_price=kwargs.get("max_price", self._sync_api.max_price),
-                timeout=kwargs.get("timeout", self._sync_api.timeout),
-                proxy_manager=kwargs.get("proxy_manager", self._sync_api.proxy_manager),
-                verify_ssl=kwargs.get("verify_ssl", self._sync_api.verify_ssl),
-            )
+        # FIX BUG #2: используем публичные атрибуты self.api_key и т.д.
+        # вместо приватного self._sync_api.api_key
+        self._sync_api = PartnerAPI(
+            api_key=self.api_key,
+            base_url=kwargs.get("base_url", self.base_url),
+            service=kwargs.get("service", self.service),
+            country=kwargs.get("country", self.country),
+            max_price=kwargs.get("max_price", self.max_price),
+            timeout=kwargs.get("timeout", self.timeout),
+            proxy_manager=kwargs.get("proxy_manager", self.proxy_manager),
+            verify_ssl=kwargs.get("verify_ssl", self.verify_ssl),
+        )
