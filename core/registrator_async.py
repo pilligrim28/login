@@ -303,7 +303,7 @@ class AsyncMicrosoftRegistrator:
             if proxy.get("username"):
                 proxy_config["username"] = proxy["username"]
                 proxy_config["password"] = proxy.get("password", "")
-            log.info(f"🌐 Camoufox proxy_config: {proxy_config}")
+            log.info(f"🌐 Proxy config: {proxy_config}")
 
         # ---- Camoufox ----
         if use_camoufox:
@@ -317,10 +317,15 @@ class AsyncMicrosoftRegistrator:
                 "headless": headless,
                 "debug": debug,
                 "humanize": True,
-                "geoip": True,
+                "geoip": True,  # Camoufox требует geoip=True при использовании прокси
             }
             if proxy_config:
-                camoufox_kwargs["proxy"] = proxy_config
+                # Camoufox ожидает proxy в формате: server + username/password отдельно
+                camoufox_proxy = {"server": proxy_config["server"]}
+                if proxy_config.get("username"):
+                    camoufox_proxy["username"] = proxy_config["username"]
+                    camoufox_proxy["password"] = proxy_config["password"]
+                camoufox_kwargs["proxy"] = camoufox_proxy
 
             try:
                 self._camoufox = AsyncCamoufox(**camoufox_kwargs)
@@ -472,7 +477,7 @@ class AsyncMicrosoftRegistrator:
             self._callback_status("opening_page", {"email": email})
             await self._page.goto(
                 self.SIGNUP_URL,
-                wait_until="networkidle",
+                wait_until="domcontentloaded",
                 timeout=45000
             )
 

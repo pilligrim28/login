@@ -36,6 +36,14 @@ class ProxySettings(SettingsSection):
     proxies: list[str] = Field(default_factory=list)
     rotation_url: str = ""
     dead_timeout: int = 300
+    # getproxy.pro settings
+    getproxy_api_key: str = ""
+    getproxy_country: str = "all"
+    getproxy_length: int = 30
+    # IPRoyal settings
+    iproyal_api_key: str = ""
+    iproyal_country: str = "all"
+    iproyal_length: int = 30
 
 
 class WorkerSettings(SettingsSection):

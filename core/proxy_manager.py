@@ -32,6 +32,8 @@ class ProxyManager:
         proxy_mode = self.config.get("proxy.mode", "static")
         if proxy_mode == "iproyal":
             self._load_iproyal()
+        elif proxy_mode == "getproxy":
+            self._load_getproxy()
         else:
             self._load_static()
         log.info(f"Загружено прокси: {len(self.proxies)}")
@@ -80,6 +82,49 @@ class ProxyManager:
         except Exception as e:
             from .logger import log
             log.error(f"Ошибка запроса к IPRoyal: {e}")
+        return []
+
+    def _load_getproxy(self):
+        from .logger import log
+        api_key = self.config.get("proxy.getproxy_api_key", "")
+        country = self.config.get("proxy.getproxy_country", "all")
+        length = self.config.get("proxy.getproxy_length", 30)
+        if not api_key:
+            log.error("getproxy.pro API ключ не настроен")
+            return
+        proxies = self._fetch_getproxy_proxies(api_key, country, length)
+        if proxies:
+            self.proxies = proxies
+            log.success(f"Получено {len(proxies)} прокси от getproxy.pro")
+
+    def _fetch_getproxy_proxies(self, api_key: str, country: str, length: int) -> List[Dict]:
+        url = "https://getproxy.pro/api/v1/proxy"
+        headers = {"Authorization": f"Bearer {api_key}"}
+        params = {"country": country, "length": length}
+        try:
+            with httpx.Client(timeout=30) as client:
+                response = client.get(url, headers=headers, params=params)
+                response.raise_for_status()
+                data = response.json()
+                if data.get("status") == "success" and "proxies" in data:
+                    result = []
+                    for proxy_str in data["proxies"]:
+                        parts = proxy_str.split(":")
+                        if len(parts) >= 2:
+                            result.append({
+                                "server": f"{parts[0]}:{parts[1]}",
+                                "type": "http",
+                                "username": parts[2] if len(parts) > 2 else None,
+                                "password": parts[3] if len(parts) > 3 else None,
+                                "rotation": False,
+                                "dead": False,
+                                "ip": data.get("ip"),
+                                "session": api_key,
+                            })
+                    return result
+        except Exception as e:
+            from .logger import log
+            log.error(f"Ошибка запроса к getproxy.pro: {e}")
         return []
 
     def _load_static(self):

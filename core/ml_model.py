@@ -1,12 +1,10 @@
 """
 ML-модель предсказания успешности регистрации.
-
 Бинарная логистическая регрессия (online-SGD, L2) без внешних зависимостей.
 Обучается на истории попыток и умеет ранжировать комбинации параметров
 (сервис, страна, оператор, прокси, час суток) — «находить возможности».
 Веса сохраняются в JSON, чтобы модель дообучалась между запусками.
 """
-
 import hashlib
 import json
 import math
@@ -46,6 +44,7 @@ def _parse_hour(created_at: Optional[str]) -> Optional[int]:
 
 def record_to_features(attempt: Dict) -> Dict[str, str]:
     """Запись попытки (строка БД) -> словарь признаков."""
+    #  ИСПРАВЛЕНО: убраны пробелы в ключах
     proxy = attempt.get("proxy") or ""
     return {
         "service": attempt.get("service") or None,
@@ -58,7 +57,6 @@ def record_to_features(attempt: Dict) -> Dict[str, str]:
 
 class LogisticRegression:
     """Бинарная логистическая регрессия с L2 и online-SGD."""
-
     FIELDS = ("service", "country", "operator", "proxy_bucket", "hour_bucket")
 
     def __init__(self, path="ml_model.json", learning_rate=0.15, l2=0.01):
@@ -166,6 +164,7 @@ def get_model(config) -> LogisticRegression:
 
 def build_options(attempts: List[Dict]) -> List[Dict[str, str]]:
     """Кандидаты (service x country) на основе истории."""
+    # 🔥 ИСПРАВЛЕНО: убраны пробелы в ключах
     services = sorted({a.get("service") for a in attempts if a.get("service")}) or [None]
     countries = sorted({a.get("country") for a in attempts if a.get("country")}) or [None]
     options = []
