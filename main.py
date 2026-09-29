@@ -25,6 +25,7 @@ import os
 import asyncio
 import logging
 import shutil
+import subprocess
 from pathlib import Path
 
 import typer
@@ -129,6 +130,48 @@ def resolve_run_mode(config: Config, mode: str | None = None) -> str:
     return "sync"
 
 
+def _ensure_playwright_browsers_installed() -> bool:
+    """Синхронная проверка/установка браузеров Playwright (для CLI-путей).
+
+    Возвращает True, если браузеры готовы к запуску. Используется в check_setup,
+    чтобы пользователь получал понятное сообщение (или авто-установку) ещё до
+    старта регистраций, а не после падения 100 потоков с ошибкой
+    "Executable doesn't exist at ...".
+    """
+    from core.registrator_async import (
+        _playwright_browsers_installed,
+        _headless_shell_installed,
+    )
+
+    if not _playwright_browsers_installed():
+        log.info("Браузеры Playwright не найдены — запускаю `playwright install chromium` "
+                 "(разовая операция, может занять несколько минут)...")
+        try:
+            result = subprocess.run(
+                [sys.executable, "-m", "playwright", "install", "chromium"],
+                capture_output=True,
+                text=True,
+                timeout=1800,
+                check=False,
+            )
+        except (subprocess.SubprocessError, OSError) as exc:
+            log.error(f"Не удалось запустить установку браузеров: {exc}")
+            return False
+        if result.returncode != 0:
+            output = "\n".join(p for p in (result.stdout, result.stderr) if p).strip()
+            log.error("Авто-установка браузеров не удалась:\n" + output[:2000])
+            log.error("Выполните вручную: python -m playwright install chromium")
+            return False
+        log.success("✅ Браузеры Playwright установлены.")
+
+    # Headless shell опционален: при его отсутствии код сам переключится
+    # на полный Chromium в headless-режиме.
+    if not _headless_shell_installed():
+        log.info("Chromium headless shell не найден — будет использован полный "
+                 "Chromium в headless-режиме (дополнительная загрузка не требуется).")
+    return True
+
+
 def check_setup(config: Config) -> bool:
     """
     Проверить настройки перед запуском.
@@ -179,6 +222,12 @@ def check_setup(config: Config) -> bool:
     stats = db.get_stats()
     log.success(f"База данных: всего {stats['total']} аккаунтов, "
                 f"успешных {stats['success']}")
+
+    # Браузеры Playwright (нужны для fallback-движка Chromium)
+    backend = str(config.get("browser.backend", "camoufox")).strip().lower()
+    if backend != "camoufox" or not config.get("camoufox.enabled", True):
+        if not _ensure_playwright_browsers_installed():
+            return False
 
     # Воркер
     total = config.get("worker.total_registrations", 100)

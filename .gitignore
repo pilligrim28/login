@@ -1,10 +1,5 @@
-# Compiled and build artifacts
-__pycache__/
+# Compiled/Binary files
 *.pyc
 
-# Logs
-logs/
-*.log
-
-# Database files
-test.db
+# Dependency directories
+__pycache__/

@@ -14,10 +14,13 @@ import asyncio
 import json
 import os
 import random
+import re
 import shutil
 import string
 import subprocess
 import sys
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 from typing import Optional, Dict, Callable, Tuple
 
 from playwright.async_api import async_playwright, Page, BrowserContext, Browser
@@ -27,6 +30,135 @@ from .logger import log
 from .sms_async import AsyncSMSActivate
 from .database import Database
 from .proxy_manager import ProxyManager
+
+
+# ---------------------------------------------------------------------------
+# Автоустановка браузеров Playwright (fix "Executable doesn't exist at ...")
+# ---------------------------------------------------------------------------
+
+_PW_INSTALL_LOCK: Optional[asyncio.Lock] = None
+_PW_BROWSERS_READY = False
+_PW_LAST_ERROR: Optional[str] = None
+
+
+def _get_install_lock() -> asyncio.Lock:
+    """Ленивое создание asyncio.Lock внутри запущенного event loop."""
+    global _PW_INSTALL_LOCK
+    if _PW_INSTALL_LOCK is None:
+        _PW_INSTALL_LOCK = asyncio.Lock()
+    return _PW_INSTALL_LOCK
+
+# Регулярка для извлечения имени браузера из сообщения об ошибке
+_EXECUTABLE_MISSING_RE = re.compile(
+    r"Executable doesn't exist at\s+\S*?(chromium|firefox|webkit)[_-]\S*",
+    re.IGNORECASE,
+)
+
+
+def _playwright_browsers_installed() -> bool:
+    """Быстрая проверка: есть ли хотя бы один установленный браузер в реестре Playwright."""
+    try:
+        from playwright.sync_api import sync_playwright
+
+        with sync_playwright() as pw:
+            for name in ("chromium", "firefox", "webkit"):
+                bt = getattr(pw, name)
+                try:
+                    if Path(bt.executable_path).exists():
+                        return True
+                except Exception:
+                    continue
+    except Exception:
+        pass
+    return False
+
+
+async def ensure_playwright_browsers(names: Tuple[str, ...] = ("chromium",)) -> bool:
+    """Установить недостающие браузеры Playwright (аналог `playwright install`).
+
+    Вызывается автоматически при первом запуске Chromium-fallback, если
+    браузеры не скачаны. Потоки не плодят параллельные установки —
+    всё сериализовано через lock и кэш результата.
+    """
+    global _PW_BROWSERS_READY, _PW_LAST_ERROR
+
+    if _PW_BROWSERS_READY:
+        return True
+
+    async with _get_install_lock():
+        # двойная проверка после получения лога
+        if _PW_BROWSERS_READY:
+            return True
+
+        loop = asyncio.get_running_loop()
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            installed = await loop.run_in_executor(pool, _playwright_browsers_installed)
+
+        if installed:
+            _PW_BROWSERS_READY = True
+            return True
+
+        args = [sys.executable, "-m", "playwright", "install", *names]
+        log.info("Браузеры Playwright не найдены — запускаю авто-установку: "
+                 f"{' '.join(args[2:])} (может занять несколько минут)...")
+        try:
+            def _run_install() -> subprocess.CompletedProcess:
+                return subprocess.run(
+                    args,
+                    capture_output=True,
+                    text=True,
+                    timeout=1800,
+                    check=False,
+                )
+
+            result = await loop.run_in_executor(None, _run_install)
+        except (subprocess.SubprocessError, OSError) as exc:
+            _PW_LAST_ERROR = str(exc)
+            log.error(f"Не удалось запустить авто-установку браузеров: {exc}")
+            return False
+
+        output = "\n".join(p for p in (result.stdout, result.stderr) if p).strip()
+        if result.returncode == 0:
+            _PW_BROWSERS_READY = True
+            log.info("✅ Браузеры Playwright успешно установлены.")
+            return True
+
+        _PW_LAST_ERROR = output[:2000] or f"exit code {result.returncode}"
+        log.error(f"Авто-установка браузеров завершилась с ошибкой:\n{_PW_LAST_ERROR}")
+        return False
+
+
+def _is_executable_missing_error(message: str) -> bool:
+    """Определить, что ошибка запуска — отсутствующий бинарник браузера."""
+    lowered = message.lower()
+    return "executable doesn't exist" in lowered or "playwright install" in lowered
+
+
+def reset_playwright_install_cache():
+    """Сбросить кэш успешной установки (вызывается при свежей ошибке запуска)."""
+    global _PW_BROWSERS_READY
+    _PW_BROWSERS_READY = False
+
+
+def _headless_shell_installed() -> bool:
+    """Есть ли в реестре Playwright скачанный chromium-headless-shell.
+
+    В Playwright >= 1.49 `chromium.launch(headless=True)` по умолчанию использует
+    отдельный бинарник `chrome-headless-shell`, который НЕ ставится вместе с
+    обычным `chromium` (нужна команда `playwright install chromium-headless-shell`).
+    Если его нет, а обычный Chromium установлен — мы подменим канал запуска,
+    чтобы не требовать вторую загрузку (~100 МБ).
+    """
+    try:
+        from playwright.sync_api import sync_playwright
+
+        with sync_playwright() as pw:
+            path = pw.chromium._browser_type_executable_path(  # type: ignore[attr-defined]
+                channel="chromium-headless-shell"
+            )
+            return bool(path) and Path(path).exists()
+    except Exception:
+        return False
 
 
 class AsyncMicrosoftRegistrator:
@@ -269,6 +401,65 @@ class AsyncMicrosoftRegistrator:
     # РАБОТА С БРАУЗЕРОМ
     # ============================================
 
+    async def _launch_chromium(
+        self,
+        launch_options: dict,
+        context_options: dict,
+    ) -> Tuple[Browser, BrowserContext]:
+        """Запустить Chromium через Playwright.
+
+        Особенности (fix "Executable doesn't exist at .../chrome-headless-shell.exe"):
+        1. Если браузеры Playwright вообще не скачаны — автоматически
+           выполняется `playwright install chromium` (разовая операция).
+        2. В headless-режиме Playwright >= 1.49 по умолчанию ищет отдельный
+           бинарник chrome-headless-shell. Если он отсутствует, но обычный
+           Chromium установлен — подменяем канал на 'chromium' и запускаем
+           полный браузер в headless (без второй загрузки ~100 МБ).
+        """
+        # Проактивная проверка до первого запуска (экономит время при 10+ потоках)
+        await ensure_playwright_browsers(("chromium",))
+
+        # Обход отсутствующего headless shell: используем полный Chromium
+        if launch_options.get("headless"):
+            loop = asyncio.get_running_loop()
+            with ThreadPoolExecutor(max_workers=1) as pool:
+                hs_ok = await loop.run_in_executor(pool, _headless_shell_installed)
+            if not hs_ok:
+                launch_options = {**launch_options, "channel": "chromium"}
+
+        for attempt in range(2):
+            self._playwright = await async_playwright().start()
+            try:
+                self._browser = await self._playwright.chromium.launch(**launch_options)
+                break
+            except Exception as exc:
+                message = str(exc)
+                await self._stop_playwright()
+                if attempt == 0 and _is_executable_missing_error(message):
+                    log.warning(
+                        "Бинарник Chromium отсутствует — запускаю авто-установку "
+                        "браузеров Playwright (это разовая операция)..."
+                    )
+                    reset_playwright_install_cache()
+                    if await ensure_playwright_browsers(("chromium",)):
+                        # при повторе убираем явный канал — после установки всё на месте
+                        launch_options = {k: v for k, v in launch_options.items()
+                                          if k != "channel"}
+                        continue
+                raise
+
+        self._context = await self._browser.new_context(**context_options)
+        return self._browser, self._context
+
+    async def _stop_playwright(self):
+        """Корректно остановить инстанс playwright после неудачного запуска."""
+        if self._playwright:
+            try:
+                await self._playwright.stop()
+            except Exception:
+                pass
+        self._playwright = None
+
     async def _launch_browser(self, proxy: Optional[dict] = None) -> Tuple[Browser, BrowserContext]:
         """Запустить браузер через Camoufox с возможностью отката к обычному Chromium.
 
@@ -373,15 +564,14 @@ class AsyncMicrosoftRegistrator:
         if proxy_config:
             launch_options["proxy"] = proxy_config
 
-        self._playwright = await async_playwright().start()
-        self._browser = await self._playwright.chromium.launch(**launch_options)
-        self._context = await self._browser.new_context(
-            viewport={"width": viewport_width, "height": viewport_height},
-            locale=locale,
-            timezone_id=timezone_id,
-            user_agent=user_agent,
-        )
-        return self._browser, self._context
+        context_options = {
+            "viewport": {"width": viewport_width, "height": viewport_height},
+            "locale": locale,
+            "timezone_id": timezone_id,
+            "user_agent": user_agent,
+        }
+
+        return await self._launch_chromium(launch_options, context_options)
 
     async def _click_next(self, page: Page) -> bool:
         """Нажать кнопку 'Далее'."""
