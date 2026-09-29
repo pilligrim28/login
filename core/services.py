@@ -10,7 +10,9 @@ from .registrator import (
     SnapchatRegistrator,
 )
 
-# 🔥 ИСПРАВЛЕНО: убраны пробелы в ключах
+# Единый реестр регистраторов. Классы работают и в синхронном воркере
+# (Worker оборачивает coro в asyncio.run), и в асинхронном (AsyncWorker
+# ожидает coro напрямую) — интерфейс у них один: await register(proxy=None).
 REGISTRATORS: Dict[str, type] = {
     "Microsoft": MicrosoftRegistrator,
     "Outlook": MicrosoftRegistrator,
@@ -95,6 +97,32 @@ def get_registrator(
             f"Сервис '{service_name}' не поддерживается. Доступно: {supported}"
         )
     return cls(
+        sms=sms,
+        db=db,
+        proxy_manager=proxy_manager,
+        config=config,
+        on_status=on_status,
+        on_log=on_log,
+    )
+
+
+def get_async_registrator(
+    service_name: str,
+    sms,
+    db,
+    proxy_manager,
+    config,
+    on_status: Optional[Callable] = None,
+    on_log: Optional[Callable] = None,
+):
+    """
+    Создать регистратор для асинхронного воркера.
+
+    Те же классы, что и в синхронном режиме: `register()` — это корутина,
+    которую AsyncWorker ожидает напрямую (без лишних потоков и asyncio.run).
+    """
+    return get_registrator(
+        service_name=service_name,
         sms=sms,
         db=db,
         proxy_manager=proxy_manager,

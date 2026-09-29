@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -52,6 +52,11 @@ class WorkerSettings(SettingsSection):
     headless: bool = True
     retry_count: int = 3
     min_balance: float = 20
+    # Явный лимит параллельности для асинхронного режима
+    # (если задан — main.py в режиме auto выбирает async)
+    max_concurrency: Optional[int] = None
+    # Принудительный выбор режима: "" (auto) | sync | async
+    mode: str = ""
 
 
 class DatabaseSettings(SettingsSection):
@@ -68,6 +73,16 @@ class MlSettings(SettingsSection):
 
 class BrowserSettings(SettingsSection):
     backend: str = "camoufox"
+
+
+class AsyncSettings(SettingsSection):
+    # true — в режиме auto main.py выбирает асинхронный воркер
+    enabled: bool = False
+
+
+class RunSettings(SettingsSection):
+    # auto | sync | async (алиас для WORKER__MODE)
+    mode: str = "auto"
 
 
 class CamoufoxSettings(SettingsSection):
@@ -103,6 +118,11 @@ class Settings(BaseSettings):
     ml: MlSettings = Field(default_factory=MlSettings)
     browser: BrowserSettings = Field(default_factory=BrowserSettings)
     camoufox: CamoufoxSettings = Field(default_factory=CamoufoxSettings)
+    # Секция ASYNC__* из env. Имя поля с нижним подчёркиванием, потому что
+    # ``async`` — ключевое слово Python; Config.get("async.enabled") работает
+    # через _get_from_dict (см. ниже).
+    async_: AsyncSettings = Field(default_factory=AsyncSettings)
+    run: RunSettings = Field(default_factory=RunSettings)
 
 
 class Config:
@@ -126,7 +146,27 @@ class Config:
             )
 
         env_file = self.path if os.path.exists(self.path) else ".env"
-        settings = Settings(_env_file=env_file if os.path.exists(env_file) else None)
+        # Явно перечитываем пары из env-файла и кладём их в os.environ,
+        # чтобы значения из файла имели приоритет (как было в старой версии).
+        file_vars = {}
+        if os.path.exists(env_file):
+            try:
+                from dotenv import dotenv_values
+                file_vars = {k: v for k, v in dotenv_values(env_file).items() if v is not None}
+            except ImportError:
+                file_vars = {}
+        saved = {}
+        for k, v in file_vars.items():
+            saved[k] = os.environ.get(k)
+            os.environ[k] = v
+        try:
+            settings = Settings(_env_file=None)
+        finally:
+            for k, old_v in saved.items():
+                if old_v is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = old_v
         return settings.model_dump()
 
     def get(self, key: str, default: Any = None) -> Any:
@@ -148,6 +188,9 @@ class Config:
             ValueError: Если значение не прошло валидацию
         """
         keys = key.split(".")
+        if keys and keys[0] == "async":
+            # env-секция ASYNC__* живёт в поле async_ (async — ключевое слово)
+            keys[0] = "async_"
         value = self.data
 
         for k in keys:

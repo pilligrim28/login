@@ -135,7 +135,12 @@ class Worker:
                 if self._stop_flag.is_set():
                     break
 
-                result = future.result()
+                try:
+                    result = future.result()
+                except Exception as e:
+                    # Ошибка одной регистрации не должна ронять весь воркер
+                    log.error(f"❌ Ошибка регистрации: {e}")
+                    result = None
                 done_count += 1
 
                 if result:
