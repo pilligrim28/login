@@ -1,1 +1,10 @@
-(empty)
+# Compiled and build artifacts
+__pycache__/
+*.pyc
+
+# Logs
+logs/
+*.log
+
+# Database files
+test.db

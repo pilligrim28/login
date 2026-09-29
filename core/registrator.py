@@ -7,11 +7,19 @@
 синхронным (`workers/worker.py`) и асинхронным (`workers/async_worker.py`)
 режимами нет расхождений и путаницы.
 """
+import inspect
 from typing import Optional, Dict, Callable
 
+from .async_compat import AsyncSMSWrapper
 from .database import Database
 from .proxy_manager import ProxyManager
 from .registrator_async import AsyncMicrosoftRegistrator
+
+
+def _is_async_client(sms) -> bool:
+    """Клиент уже имеет асинхронный интерфейс (методы — корутины)."""
+    rent = getattr(sms, "rent_number", None)
+    return inspect.iscoroutinefunction(rent)
 
 
 class BaseRegistrator:
@@ -64,8 +72,13 @@ class MicrosoftRegistrator(BaseRegistrator):
     SERVICE_NAME = "Microsoft"
 
     async def register(self, proxy: Optional[dict] = None) -> Optional[Dict]:
+        # Ядро регистрации — асинхронное. Если сюда пришёл синхронный
+        # клиент (PartnerAPI / SMSActivate), оборачиваем его, иначе
+        # `await sms.rent_number()` упадёт с "'dict' object can't be awaited".
+        sms = self.sms if _is_async_client(self.sms) else AsyncSMSWrapper(self.sms)
+
         reg = AsyncMicrosoftRegistrator(
-            sms=self.sms,
+            sms=sms,
             db=self.db,
             proxy_manager=self.proxy_manager,
             config=self.config,
