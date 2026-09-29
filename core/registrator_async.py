@@ -140,6 +140,84 @@ def reset_playwright_install_cache():
     _PW_BROWSERS_READY = False
 
 
+def _playwright_browsers_root() -> Optional[Path]:
+    """Каталог, куда Playwright скачивает браузеры (по умолчанию ~/.cache/ms-playwright
+    на Linux, %LOCALAPPDATA%\\ms-playwright на Windows)."""
+    env = os.environ.get("PLAYWRIGHT_BROWSERS_PATH")
+    if env:
+        try:
+            return Path(env).expanduser()
+        except Exception:
+            return None
+    try:
+        from playwright._impl._driver import compute_driver_dir
+
+        driver_dir = Path(compute_driver_dir())
+        # driver лежит в site-packages/playwright/driver — поднимаемся до site-packages
+        for parent in driver_dir.parents:
+            if parent.name.lower() in ("site-packages", "lib"):
+                candidates = [parent.parent / "ms-playwright",
+                              parent / "ms-playwright"]
+                for c in candidates:
+                    if c.exists():
+                        return c
+    except Exception:
+        pass
+    home = Path.home()
+    for cand in (
+        home / "AppData" / "Local" / "ms-playwright",   # Windows
+        home / ".cache" / "ms-playwright",              # Linux
+        home / "Library" / "Caches" / "ms-playwright",  # macOS
+    ):
+        if cand.exists():
+            return cand
+    return None
+
+
+def _find_headless_shell_executable() -> Optional[str]:
+    """Найти бинарник chrome-headless-shell в каталоге браузеров Playwright.
+
+    Надёжный способ без приватных API (в разных версиях playwright они разные):
+    ищем каталоги вида chromium_headless_shell-* / chromium-headless-shell-* и
+    внутри — исполняемый файл.
+    """
+    root = _playwright_browsers_root()
+    if root is None or not root.exists():
+        return None
+    # Порядок поиска исполняемых файлов: сначала «родной» для текущей ОС,
+    # затем остальные варианты (важно для тестов и переноса кэша браузеров
+    # между машинами с разными ОС).
+    exe_names = ["chrome-headless-shell"]
+    if os.name == "nt":
+        exe_names.insert(0, "chrome-headless-shell.exe")
+    else:
+        exe_names.append("chrome-headless-shell.exe")
+    try:
+        for d in sorted(root.iterdir(), reverse=True):
+            if not d.is_dir():
+                continue
+            name = d.name.lower()
+            if "headless" not in name or not name.startswith("chromium"):
+                continue
+            for sub in ("chrome-headless-shell-win64", "chrome-headless-shell-linux64",
+                        "chrome-headless-shell-mac", "."):
+                cand_dir = d / sub
+                if not cand_dir.exists():
+                    continue
+                for exe in exe_names:
+                    cand = cand_dir / exe
+                    if cand.exists():
+                        return str(cand)
+            # запасной вариант — рекурсивный поиск одного файла
+            for exe in exe_names:
+                matches = list(d.rglob(exe))
+                if matches:
+                    return str(matches[0])
+    except Exception:
+        return None
+    return None
+
+
 def _headless_shell_installed() -> bool:
     """Есть ли в реестре Playwright скачанный chromium-headless-shell.
 
@@ -149,16 +227,7 @@ def _headless_shell_installed() -> bool:
     Если его нет, а обычный Chromium установлен — мы подменим канал запуска,
     чтобы не требовать вторую загрузку (~100 МБ).
     """
-    try:
-        from playwright.sync_api import sync_playwright
-
-        with sync_playwright() as pw:
-            path = pw.chromium._browser_type_executable_path(  # type: ignore[attr-defined]
-                channel="chromium-headless-shell"
-            )
-            return bool(path) and Path(path).exists()
-    except Exception:
-        return False
+    return _find_headless_shell_executable() is not None
 
 
 class AsyncMicrosoftRegistrator:
