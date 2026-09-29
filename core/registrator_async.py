@@ -416,13 +416,57 @@ class AsyncMicrosoftRegistrator:
     # ГЛАВНЫЙ МЕТОД РЕГИСТРАЦИИ
     # ============================================
 
-    async def register(self) -> Optional[Dict]:
+    async def register(self, proxy: Optional[dict] = None, retries: int = 0) -> Optional[Dict]:
         """
-        Выполнить полный цикл регистрации.
-        
+        Выполнить полный цикл регистрации с повторными попытками.
+
+        Args:
+            proxy: Явный прокси (dict из ProxyManager). Если None — на каждой
+                   попытке берётся следующий прокси из пула (или direct).
+            retries: Число ПОВТОРОВ поверх первой попытки. По умолчанию
+                     берётся из worker.retry_count (3 => 2 повтора).
+
         Returns:
             {"email": ..., "password": ...} при успехе, None при неудаче
         """
+        if not retries:
+            try:
+                retries = max(0, int(self.config.get("worker.retry_count", 3) or 3) - 1)
+            except (TypeError, ValueError):
+                retries = 2
+
+        attempts = retries + 1
+        for attempt in range(attempts):
+            current_proxy = proxy if attempt == 0 else self.proxy_manager.get_next()
+            proxy_str = f"{current_proxy['server']}" if current_proxy else "direct"
+            self._callback_log(f"🌐 Попытка {attempt + 1}/{attempts} | IP: {proxy_str}")
+
+            result = await self._register_once(current_proxy)
+            if result:
+                return result
+
+            if attempt < attempts - 1:
+                self._callback_log(f"↻ Попытка {attempt + 1} не удалась, пробуем снова...")
+
+        self._callback_log(f"❌ Все {attempts} попыток исчерпаны")
+        return None
+
+    async def _register_once(self, proxy: Optional[dict] = None) -> Optional[Dict]:
+        """
+        Одна попытка полного цикла регистрации.
+
+        Прокси фиксируется для всей попытки: и браузер, и SMS-клиент
+        работают с одним и тем же IP (переопределяем get_next()).
+        """
+        original_get_next = self.proxy_manager.get_next
+        self.proxy_manager.get_next = lambda: proxy
+        try:
+            return await self._do_register()
+        finally:
+            self.proxy_manager.get_next = original_get_next
+
+    async def _do_register(self) -> Optional[Dict]:
+        """Внутренняя реализация одной попытки регистрации."""
         # Генерация данных
         email = self.generate_email()
         
@@ -465,7 +509,7 @@ class AsyncMicrosoftRegistrator:
         self._callback_log(f"Номер арендован: {phone}")
         log.info(f"Номер: {phone}")
 
-        # 2. Получаем прокси
+        # 2. Прокси этой попытки уже зафиксирован в _register_once
         proxy = self.proxy_manager.get_next()
 
         try:
