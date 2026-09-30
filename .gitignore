@@ -1,7 +1,9 @@
-# Python
+# Python compiled files
 __pycache__/
 *.pyc
 
+# IDE configuration
+.idea/
+
 # Logs
 logs/
-*.log

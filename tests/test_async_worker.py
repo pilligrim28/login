@@ -1,276 +1,108 @@
-"""Тесты для асинхронного воркера"""
+"""Тесты единого асинхронного воркера (workers/worker.py)."""
 
-import pytest
 import asyncio
 import tempfile
-import os
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
-from workers.async_worker import AsyncWorker
+from unittest.mock import MagicMock, patch
+
+import pytest
+
+from workers.worker import Worker, create_sms_client
 from core.config import Config
-from core.database import Database
 from tests.config_helpers import write_config
 
 
 @pytest.fixture
 def temp_config():
-    """Фикстура для временного конфига."""
-    with tempfile.NamedTemporaryFile(suffix='.env', delete=False) as f:
+    """Временный конфиг с изолированной SQLite-базой."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        db_path = str(Path(tmpdir) / "test_worker.db")
         config_data = {
             "sms": {
                 "api_key": "test_key_123",
                 "service": "Microsoft",
                 "country": "all",
-                "max_price": 0
+                "max_price": 0,
             },
-            "proxy": {
-                "enabled": False,
-                "type": "http",
-                "proxies": []
-            },
+            "proxy": {"enabled": False, "type": "http", "proxies": []},
             "worker": {
-                "threads": 5,
-                "total_registrations": 10,
-                "headless": True
+                "threads": 2,
+                "total_registrations": 4,
+                "headless": True,
             },
-            "database": {
-                "type": "sqlite",
-                "sqlite_path": "test_worker.db"
-            }
+            "database": {"type": "sqlite", "sqlite_path": db_path},
         }
-        config_path = f.name
-    write_config(Path(config_path), config_data)
-    
-    config = Config(config_path)
-    yield config
-    
-    if os.path.exists(config_path):
-        os.unlink(config_path)
-    if os.path.exists("test_worker.db"):
-        os.unlink("test_worker.db")
+        path = write_config(Path(tmpdir) / ".env", config_data)
+        yield Config(str(path))
 
 
-@pytest.fixture
-def temp_db():
-    """Фикстура для временной базы данных."""
-    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
-        db_path = f.name
-    
-    with tempfile.NamedTemporaryFile(suffix='.env', delete=False) as config_file:
-        config_data = {
-            "database": {
-                "type": "sqlite",
-                "sqlite_path": db_path
-            },
-            "sms": {"api_key": ""},
-            "proxy": {"enabled": False},
-            "worker": {"threads": 5}
-        }
-        config_path = config_file.name
-    write_config(Path(config_path), config_data)
-    
-    config = Config(config_path)
-    db = Database(config)
-    yield db
-    
-    if os.path.exists(db_path):
-        os.unlink(db_path)
-    if os.path.exists(config_path):
-        os.unlink(config_path)
+def make_worker(temp_config):
+    with patch("workers.worker.create_sms_client", return_value=MagicMock()):
+        worker = Worker(temp_config)
+    worker.sms.get_balance.return_value = {"usd": 10.0, "limit": 100.0}
+    return worker
 
 
-class TestAsyncWorkerInit:
-    """Тесты инициализации AsyncWorker."""
-
-    def test_init(self, temp_config):
-        """Тест инициализации воркера."""
-        worker = AsyncWorker(temp_config)
-        
-        assert worker.config == temp_config
-        assert worker.db is not None
-        assert worker.proxy_manager is not None
-        assert worker.api_key == temp_config.get("sms.api_key")
-        assert worker._stop_flag is False
-
-    def test_init_with_custom_values(self, temp_config):
-        """Тест инициализации с кастомными значениями."""
-        temp_config.set("sms.api_key", "custom_key")
-        temp_config.set("sms.service", "Google")
-        temp_config.set("sms.country", "US")
-        temp_config.set("sms.max_price", 50)
-        
-        worker = AsyncWorker(temp_config)
-        
-        assert worker.api_key == "custom_key"
-        assert worker.service == "Google"
-        assert worker.country == "US"
-        assert worker.max_price == 50
+def test_worker_reads_limits_from_config(temp_config):
+    worker = make_worker(temp_config)
+    assert worker.total == 4
+    assert worker.concurrency == 2
+    assert worker.services == ["Microsoft"]
 
 
-class TestAsyncWorkerStop:
-    """Тесты остановки воркера."""
-
-    def test_stop(self, temp_config):
-        """Тест остановки воркера."""
-        worker = AsyncWorker(temp_config)
-        
-        # Проверяем что флаг остановки изначально False
-        assert worker._stop_flag is False
-        
-        # Останавливаем воркер
-        worker.stop()
-        
-        # Проверяем что флаг стал True
-        assert worker._stop_flag is True
+def test_create_sms_client_prefers_partner_url(temp_config):
+    from core.partner_api import PartnerAPI
+    pm = MagicMock()
+    client = create_sms_client(temp_config, pm)
+    assert isinstance(client, PartnerAPI)
 
 
-class TestAsyncWorkerCallbacks:
-    """Тесты колбэков воркера."""
+def test_worker_run_counts_success_and_failure(temp_config):
+    worker = make_worker(temp_config)
 
-    def test_callbacks_init(self, temp_config):
-        """Тест инициализации колбэков."""
-        worker = AsyncWorker(temp_config)
-        
-        assert worker.on_progress is None
-        assert worker.on_account is None
-        assert worker.on_log is None
-        assert worker.on_finished is None
+    async def fake_register(proxy=None):
+        # Чётные индексы — успех, нечётные — нет (порядок не гарантирован,
+        # поэтому считаем по сумме результатов).
+        return None
 
-    def test_callbacks_set(self, temp_config):
-        """Тест установки колбэков."""
-        worker = AsyncWorker(temp_config)
-        
-        progress_cb = lambda d, t, s, f: None
-        account_cb = lambda a: None
-        log_cb = lambda m: None
-        finished_cb = lambda: None
-        
-        worker.on_progress = progress_cb
-        worker.on_account = account_cb
-        worker.on_log = log_cb
-        worker.on_finished = finished_cb
-        
-        assert worker.on_progress == progress_cb
-        assert worker.on_account == account_cb
-        assert worker.on_log == log_cb
-        assert worker.on_finished == finished_cb
+    captured = []
 
+    def fake_get_registrator(**kwargs):
+        reg = MagicMock()
+        reg.register = MagicMock(side_effect=lambda **kw: _result_for(kwargs["service_name"]))
+        return reg
 
-class TestAsyncWorkerHandleStatus:
-    """Тесты обработки статуса."""
+    async def _noop(*a, **k):
+        pass
 
-    def test_handle_status_success(self, temp_config):
-        """Тест обработки статуса success."""
-        worker = AsyncWorker(temp_config)
-        
-        log_messages = []
-        worker.on_log = lambda msg: log_messages.append(msg)
-        
-        worker._handle_status(1, 10, "success", {"email": "test@example.com"})
-        
-        assert len(log_messages) == 1
-        assert "✅ test@example.com" in log_messages[0]
+    results = [None, {"email": "a@b.c"}, None, {"email": "d@e.f"}]
+    it = iter(results)
 
-    def test_handle_status_failed(self, temp_config):
-        """Тест обработки статуса failed."""
-        worker = AsyncWorker(temp_config)
-        
-        log_messages = []
-        worker.on_log = lambda msg: log_messages.append(msg)
-        
-        worker._handle_status(1, 10, "failed", {"email": "test@example.com", "error": "timeout"})
-        
-        assert len(log_messages) == 1
-        assert "❌ test@example.com: timeout" in log_messages[0]
+    def _result_for(_service):
+        # Возвращаем корутину, совместимую с await в воркере
+        async def coro():
+            try:
+                return next(it)
+            except StopIteration:
+                return None
+        return coro()
 
-    def test_handle_status_starting(self, temp_config):
-        """Тест обработки статуса starting."""
-        worker = AsyncWorker(temp_config)
-        
-        log_messages = []
-        worker.on_log = lambda msg: log_messages.append(msg)
-        
-        worker._handle_status(1, 10, "starting", {"email": "test@example.com"})
-        
-        assert len(log_messages) == 1
-        assert "▶️ Начало: test@example.com" in log_messages[0]
+    progress_events = []
+    worker.on_progress = lambda *args: progress_events.append(args)
+
+    with patch("workers.worker.get_registrator", side_effect=fake_get_registrator):
+        stats = asyncio.run(worker.run())
+
+    assert stats["done"] == 4
+    assert stats["success"] == 2
+    assert stats["failed"] == 2
+    assert progress_events[-1][:2] == (4, 4)
 
 
-class TestAsyncWorkerHandleLog:
-    """Тесты обработки логов."""
-
-    def test_handle_log(self, temp_config):
-        """Тест обработки лога."""
-        worker = AsyncWorker(temp_config)
-        
-        log_messages = []
-        worker.on_log = lambda msg: log_messages.append(msg)
-        
-        worker._handle_log("Test message")
-        
-        assert len(log_messages) == 1
-        assert "Test message" in log_messages[0]
-
-    def test_handle_log_no_callback(self, temp_config):
-        """Тест обработки лога без колбэка."""
-        worker = AsyncWorker(temp_config)
-        
-        # Не устанавливаем колбэк
-        worker._handle_log("Test message")
-        
-        # Не должно быть ошибок
-        assert True
-
-
-class TestAsyncWorkerWithDatabase:
-    """Тесты взаимодействия с базой данных."""
-
-    def test_worker_with_db(self, temp_db):
-        """Тест воркера с базой данных."""
-        # Создаем конфиг с этой базой
-        with tempfile.NamedTemporaryFile(suffix='.env', delete=False) as f:
-            config_data = {
-                "sms": {
-                    "api_key": "test_key",
-                    "service": "Microsoft",
-                    "country": "all",
-                    "max_price": 0
-                },
-                "proxy": {
-                    "enabled": False,
-                    "type": "http",
-                    "proxies": []
-                },
-                "worker": {
-                    "threads": 5,
-                    "total_registrations": 10,
-                    "headless": True
-                },
-                "database": {
-                    "type": "sqlite",
-                    "sqlite_path": temp_db.sqlite_path
-                }
-            }
-            config_path = f.name
-        write_config(Path(config_path), config_data)
-        
-        try:
-            config = Config(config_path)
-            worker = AsyncWorker(config)
-            
-            # Проверяем что база данных та же самая
-            assert worker.db.sqlite_path == temp_db.sqlite_path
-            
-            # Добавляем аккаунт через воркер
-            worker.db.add_account(
-                email="worker@example.com",
-                password="password123"
-            )
-            
-            # Проверяем что аккаунт добавился
-            account = worker.db.get_account_by_email("worker@example.com")
-            assert account is not None
-            assert account["email"] == "worker@example.com"
-        finally:
-            if os.path.exists(config_path):
-                os.unlink(config_path)
+def test_worker_stop_skips_remaining(temp_config):
+    worker = make_worker(temp_config)
+    worker.stop()  # стоп до запуска задач
+    with patch("workers.worker.get_registrator") as gr:
+        stats = asyncio.run(worker.run())
+    gr.assert_not_called()
+    assert stats["done"] == 0

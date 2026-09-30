@@ -1,20 +1,15 @@
-pydantic~=2.13.4
-pydantic-settings~=2.7.1
-typer~=0.16.0
-PySide6~=6.11.2
-httpx~=0.28.0
-curl-cffi~=0.13.0
-# playwright 1.55+: поддерживает Python 3.14 и тянет greenlet>=3.5
-# (готовые wheel под cp314) — установка идёт без Visual Studio и сборки C++.
-# ВАЖНО: версия 1.49.x с жёсткой зависимостью greenlet==3.1.1 НЕ РАБОТАЕТ на
-# Python 3.14 (нет готовых wheels, локальная сборка падает с ошибками cl.exe).
-# Если pip всё же собирает greenlet 3.1.1 — значит устанавливается СТАРЫЙ
-# requirements.txt (в логе pip это видно по строке "playwright~=1.49.0").
+# MassReg — CLI + Textual TUI
+pydantic~=2.13
+pydantic-settings~=2.7
+typer~=0.16
+httpx~=0.28
+python-dotenv~=1.0
+
+# Движок регистрации (playwright 1.55+: готовые wheels под Python 3.14,
+# включая greenlet>=3.5 — установка без сборки C++).
 playwright>=1.55.0,<2.0.0
-# Явный нижний корень greenlet: даже если в окружении затесался старый
-# requirements.lock со playwright==1.49, pip не станет собирать greenlet 3.1.1.
 greenlet>=3.5.0
-# Терминальный интерфейс (python main.py / python main.py tui)
-textual>=0.89.0
 camoufox[geoip]>=0.5.0
-psycopg2-binary~=2.9.9
+
+# Терминальный интерфейс (python main.py)
+textual>=0.89.0
