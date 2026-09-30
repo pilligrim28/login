@@ -15,6 +15,7 @@ Textual TUI для MassReg — терминальный интерфейс за�
 from __future__ import annotations
 
 import asyncio
+import logging
 import queue
 import threading
 import time
@@ -48,24 +49,13 @@ def _drain_logs(max_items: int = 300) -> list[str]:
     return items
 
 
-class LogQueueHandler:
+class LogQueueHandler(logging.Handler):
     """
-    Duck-type совместимый с ``logging.Handler`` адаптер.
-
-    Перехватывает записи логгера MassReg (из worker / registrator / main)
-    и отправляет их в очередь UI вместо stderr. Формат строки совпадает
-    с консольным: ``ЧЧ:ММ:СС [УРОВЕНЬ] сообщение``.
+    Настоящий ``logging.Handler``: перехватывает записи логгера MassReg
+    (из worker / registrator / main) и отправляет их в очередь UI вместо
+    stderr. Формат строки совпадает с консольным:
+    ``ЧЧ:ММ:СС [УРОВЕНЬ] сообщение``.
     """
-
-    def __init__(self) -> None:
-        self.level = 0
-        self.formatter = None
-
-    def setLevel(self, level) -> None:  # noqa: N802 (интерфейс logging)
-        self.level = level
-
-    def setFormatter(self, fmt) -> None:  # noqa: N802
-        self.formatter = fmt
 
     def emit(self, record) -> None:
         try:
@@ -218,9 +208,10 @@ class MassRegApp(App[None]):
         ("s", "stop_run", "Стоп"),
     ]
 
-    def __init__(self, config=None) -> None:
+    def __init__(self, config=None, autostart: bool = False) -> None:
         super().__init__()
         self._config = config
+        self._autostart = autostart
         self._worker = None
         self._thread: Optional[threading.Thread] = None
         self._running = False
@@ -259,7 +250,12 @@ class MassRegApp(App[None]):
             mode = str(self._config.get("run.mode", "") or
                        self._config.get("worker.mode", "") or "auto")
             self.query_one("#stat-mode", StatLabel).set_value(mode)
-        self._log_ui("TUI готов. Нажмите 'r' или введите 'run' для старта.")
+        if self._autostart and self._config is not None:
+            self._log_ui("TUI готов — автозапуск регистрации…")
+            # Небольшая задержка, чтобы первые строки лога не потерялись
+            self.set_timer(0.3, self.start_run)
+        else:
+            self._log_ui("TUI готов. Нажмите 'r' или введите 'run' для старта.")
 
     def _install_log_handler(self) -> None:
         """Перенаправить стандартный логгер MassReg в панель логов."""
