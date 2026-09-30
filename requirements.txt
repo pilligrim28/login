@@ -1,14 +1,15 @@
-pydantic~=2.13.4
-pydantic-settings~=2.7.1
-typer~=0.16.0
-PySide6~=6.11.2
-httpx~=0.28.0
-curl-cffi~=0.13.0
-# playwright 1.55+: поддерживает Python 3.14 и не требует greenlet при сборке,
-# поэтому установка проходит без Visual Studio / компиляции C-расширений.
-# Для Python <=3.12 можно зафиксировать более старую версию (например 1.49.x).
+# MassReg — CLI + Textual TUI
+pydantic~=2.13
+pydantic-settings~=2.7
+typer~=0.16
+httpx~=0.28
+python-dotenv~=1.0
+
+# Движок регистрации (playwright 1.55+: готовые wheels под Python 3.14,
+# включая greenlet>=3.5 — установка без сборки C++).
 playwright>=1.55.0,<2.0.0
+greenlet>=3.5.0
 camoufox[geoip]>=0.5.0
-psycopg2-binary~=2.9.9
-# Терминальный интерфейс (python main.py tui): логи выводятся построчно
+
+# Терминальный интерфейс (python main.py)
 textual>=0.89.0

@@ -1,1 +1,0 @@
-"""MassReg desktop module."""
