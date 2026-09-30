@@ -830,6 +830,34 @@ def tui_command(
     launch_tui_app(config, autostart=not no_autostart)
 
 
+@app.command("tui")
+def tui_command(
+    verbose: bool = typer.Option(
+        False,
+        "--verbose",
+        "-v",
+        help="Показать подробный вывод во время работы интерфейса.",
+    ),
+    browser: str | None = typer.Option(
+        None,
+        "--browser",
+        help="Выбрать движок браузера: camoufox или chromium.",
+    ),
+    config_path: str = typer.Option(
+        ".env",
+        "--config",
+        "-c",
+        help="Путь к файлу .env.",
+    ),
+):
+    """Терминальный интерфейс (Textual): логи идут породню, по одному сообщению."""
+    set_verbose_logging(verbose)
+    config = _load_config(config_path)
+    backend = _apply_browser_backend(config, browser)
+    log.info(f"Используется браузерный движок: {backend}")
+    launch_tui_app(config)
+
+
 @app.command("ml-suggest")
 def ml_suggest_command(
     verbose: bool = typer.Option(
