@@ -5,12 +5,21 @@ MassReg — Массовая регистрация аккаунтов
 CLI-версия для запуска регистрации. Единая точка входа проекта.
 
 Использование:
-    python main.py                  # Запустить регистрацию (режим выбирается автоматически)
+    python main.py                  # TUI (Textual): логи идут породню, по очереди
+    python main.py tui              # То же самое явно
+    python main.py cli              # Классический запуск в консоль (без TUI)
     python main.py --check          # Проверить настройки и выйти
     python main.py --config .env
     python main.py --mode sync      # Принудительно потоковый (обычный) режим
     python main.py --mode async     # Принудительно асинхронный режим
+    python main.py run --no-tui     # Запуск без интерфейса (обычный вывод)
     python main.py run --dry-run    # Проверка без запуска
+
+Интерфейс (--ui / UI__MODE):
+    textual (по умолчанию) — Textual TUI: очередь логов, сообщения выводятся
+                             построчно и по порядку, а не «простыней».
+    plain                  — обычный вывод в консоль.
+В TUI: [b]r[/] — запуск, [b]s[/] — стоп, [b]c[/] — очистить логи, [b]q[/] — выход.
 
 Режим (--mode):
     auto  (по умолчанию) — асинхронный, если задан лимит потока
@@ -94,6 +103,45 @@ def _create_sms_client(config: Config, proxy_manager: ProxyManager):
         proxy_manager=proxy_manager,
         base_url=api_url or None,
     )
+
+
+def textual_available() -> bool:
+    """Проверить, установлен ли пакет textual (для TUI)."""
+    try:
+        import importlib.util
+        return importlib.util.find_spec("textual") is not None
+    except Exception:
+        return False
+
+
+def resolve_ui_mode(config: Config, ui: str | None = None) -> str:
+    """Определить интерфейс запуска: 'textual' (TUI) или 'plain' (консоль).
+
+    Приоритет: явный флаг --ui > переменная окружения UI__MODE / настройка
+    config ui.mode > значение по умолчанию «textual». Если textual не
+    установлен — автоматический откат на консольный вывод с предупреждением.
+    """
+    chosen = (ui or "").strip().lower()
+    if not chosen:
+        chosen = str(
+            os.environ.get("UI__MODE", "")
+            or config.get("ui.mode", "")
+            or "textual"
+        ).strip().lower()
+    aliases_plain = {"plain", "console", "cli", "off", "no", "none", "log", "logs"}
+    aliases_tui = {"textual", "tui", "gui", "on", "yes", "interface"}
+    if chosen in aliases_plain:
+        return "plain"
+    if chosen in aliases_tui:
+        if not sys.stdout.isatty():
+            log.warning("Вывод не терминал (перенаправлен/кран) — TUI отключён, используется обычный вывод.")
+            return "plain"
+        if not textual_available():
+            log.warning("Пакет textual не установлен — используется обычный вывод. Установка: pip install textual")
+            return "plain"
+        return "textual"
+    log.warning(f"Неизвестный режим интерфейса '{chosen}' — используется обычный вывод.")
+    return "plain"
 
 
 def resolve_run_mode(config: Config, mode: str | None = None) -> str:
@@ -240,12 +288,41 @@ def check_setup(config: Config) -> bool:
     return True
 
 
-def run_sync(config: Config):
-    """Запустить регистрацию в синхронном режиме."""
+def _install_queue_log_handler() -> None:
+    """Переключить консольный вывод логов в очередь TUI.
+
+    Каждый лог становится отдельной записью очереди; Textual выводит их
+    построчно (породню), поэтому сообщения из 10 потоков не слипаются.
+    Файловый handler (logs/*.log) остаётся подключённым — запись в файл
+    продолжается как раньше.
+    """
+    import sys
+
+    from core.tui import LogQueueHandler
+
+    for handler in list(log.logger.handlers):
+        if type(handler).__name__ == "StreamHandler" and \
+                getattr(handler, "stream", None) in (sys.stderr, sys.stdout):
+            log.logger.removeHandler(handler)
+    if not any(isinstance(h, LogQueueHandler) for h in log.logger.handlers):
+        log.logger.addHandler(LogQueueHandler())
+
+
+def run_sync(config: Config, progress_cb=None):
+    """Запустить регистрацию в синхронном режиме.
+
+    progress_cb: необязательный колбэк (done, total, success, failed)
+    для внешних интерфейсов (TUI/GUI).
+    """
     worker = Worker(config)
 
     def on_progress(done, total, success, failed):
         log.info(f"Прогресс: {done}/{total} (успех: {success}, неудача: {failed})")
+        if progress_cb:
+            try:
+                progress_cb(done, total, success, failed)
+            except Exception:
+                pass
 
     def on_account(account):
         log.info(f"Аккаунт: {account}")
@@ -268,17 +345,62 @@ def run_sync(config: Config):
         worker.stop()
 
 
-async def run_async(config: Config):
-    """Запустить регистрацию в асинхронном режиме."""
+async def run_async(config: Config, progress_cb=None):
+    """Запустить регистрацию в асинхронном режиме.
+
+    progress_cb: необязательный колбэк (done, total, success, failed).
+    """
     from workers.async_worker import AsyncWorker
 
     worker = AsyncWorker(config)
+
+    if progress_cb:
+        def on_progress(done, total, success, failed):
+            try:
+                progress_cb(done, total, success, failed)
+            except Exception:
+                pass
+
+        worker.on_progress = on_progress
 
     try:
         await worker.run()
     except KeyboardInterrupt:
         log.warning("Прервано пользователем (Ctrl+C)")
         worker.stop()
+
+
+def launch_tui_app(config: Config, autostart: bool = True) -> None:
+    """Запустить терминальный интерфейс (Textual) с лого-очередью.
+
+    autostart=True — регистрация стартует автоматически сразу после открытия
+    TUI (чтобы `python main.py` работал «из коробки»). Если нужно просто
+    открыть интерфейс и запустить вручную клавишей 'r' — передайте False.
+    """
+    try:
+        from core.tui import MassRegApp
+    except ImportError as exc:
+        log.error("Для TUI нужен пакет textual. Установите: pip install textual")
+        raise typer.Exit(code=1) from exc
+
+    _install_queue_log_handler()
+    app = MassRegApp(config=config, autostart=autostart)
+    app.run()
+
+
+def run_with_ui(config: Config, mode: str = "auto", ui: str | None = None,
+                autostart: bool = True) -> None:
+    """Единая точка запуска: сама выбирает TUI (Textual) или консольный вывод.
+
+    Используется из main() без команды и из команды ``run``.
+    """
+    if resolve_ui_mode(config, ui) == "textual":
+        launch_tui_app(config, autostart=autostart)
+        return
+    if resolve_run_mode(config, None if mode == "auto" else mode) == "async":
+        asyncio.run(run_async(config))
+    else:
+        run_sync(config)
 
 
 def ml_suggest(config: Config):
@@ -425,6 +547,27 @@ def main(
         "-m",
         help="Режим запуска: auto (подбирается автоматически), sync или async.",
     ),
+    ui: str | None = typer.Option(
+        None,
+        "--ui",
+        help="Интерфейс: textual (TUI, по умолчанию), plain (обычная консоль). "
+             "Можно задать через UI__MODE в .env.",
+    ),
+    tui: bool = typer.Option(
+        False,
+        "--tui",
+        help="Совместимость: то же, что --ui textual (по умолчанию и так включён).",
+    ),
+    no_tui: bool = typer.Option(
+        False,
+        "--no-tui",
+        help="Запустить без TUI, с обычным выводом логов в консоль.",
+    ),
+    autostart: bool = typer.Option(
+        True,
+        "--autostart/--no-autostart",
+        help="В TUI: сразу начать регистрацию (по умолчанию да) или ждать 'r'.",
+    ),
     check: bool = typer.Option(
         False,
         "--check",
@@ -465,10 +608,14 @@ def main(
         ml_suggest(config)
         raise typer.Exit(code=0)
 
-    if resolve_run_mode(config, mode) == "async":
-        asyncio.run(run_async(config))
-    else:
-        run_sync(config)
+    # По умолчанию — Textual TUI (логи породню, по очереди). Отключение:
+    # --no-tui / --ui plain / UI__MODE=plain.
+    chosen_ui = ui
+    if no_tui:
+        chosen_ui = "plain"
+    elif tui and not chosen_ui:
+        chosen_ui = "textual"
+    run_with_ui(config, mode=mode, ui=chosen_ui, autostart=autostart)
 
 
 @app.command("version")
@@ -570,8 +717,28 @@ def run_command(
         "-m",
         help="Режим: auto (автоподбор), sync (обычный) или async (асинхронный).",
     ),
+    ui: str | None = typer.Option(
+        None,
+        "--ui",
+        help="Интерфейс: textual (TUI, по умолчанию) или plain (обычная консоль).",
+    ),
+    tui: bool = typer.Option(
+        False,
+        "--tui",
+        help="Совместимость: то же, что --ui textual.",
+    ),
+    no_tui: bool = typer.Option(
+        False,
+        "--no-tui",
+        help="Запуск без TUI (обычный вывод логов в консоль).",
+    ),
+    autostart: bool = typer.Option(
+        True,
+        "--autostart/--no-autostart",
+        help="В TUI: сразу начать регистрацию или ждать нажатия 'r'.",
+    ),
 ):
-    """Запустить массовую регистрацию."""
+    """Запустить массовую регистрацию (по умолчанию — через Textual TUI)."""
     set_verbose_logging(verbose)
     config = _load_config(config_path)
     backend = _apply_browser_backend(config, browser)
@@ -582,10 +749,85 @@ def run_command(
         ok = check_setup(config)
         raise typer.Exit(code=0 if ok else 1)
 
-    if resolve_run_mode(config, None if mode == "auto" else mode) == "async":
-        asyncio.run(run_async(config))
-    else:
-        run_sync(config)
+    chosen_ui = ui
+    if no_tui:
+        chosen_ui = "plain"
+    elif tui and not chosen_ui:
+        chosen_ui = "textual"
+    run_with_ui(config, mode=mode, ui=chosen_ui, autostart=autostart)
+
+
+@app.command("cli")
+def cli_command(
+    verbose: bool = typer.Option(
+        False,
+        "--verbose",
+        "-v",
+        help="Показать подробный вывод во время запуска.",
+    ),
+    browser: str | None = typer.Option(
+        None,
+        "--browser",
+        help="Выбрать движок браузера: camoufox или chromium.",
+    ),
+    config_path: str = typer.Option(
+        ".env",
+        "--config",
+        "-c",
+        help="Путь к файлу .env.",
+    ),
+    mode: str = typer.Option(
+        "auto",
+        "--mode",
+        "-m",
+        help="Режим: auto (автоподбор), sync (обычный) или async (асинхронный).",
+    ),
+):
+    """Запустить регистрацию с обычным консольным выводом (без TUI)."""
+    run_command(
+        verbose=verbose,
+        browser=browser,
+        dry_run=False,
+        config_path=config_path,
+        mode=mode,
+        ui="plain",
+        tui=False,
+        no_tui=True,
+        autostart=True,
+    )
+
+
+@app.command("tui")
+def tui_command(
+    verbose: bool = typer.Option(
+        False,
+        "--verbose",
+        "-v",
+        help="Показать подробный вывод во время работы интерфейса.",
+    ),
+    browser: str | None = typer.Option(
+        None,
+        "--browser",
+        help="Выбрать движок браузера: camoufox или chromium.",
+    ),
+    config_path: str = typer.Option(
+        ".env",
+        "--config",
+        "-c",
+        help="Путь к файлу .env.",
+    ),
+    no_autostart: bool = typer.Option(
+        False,
+        "--no-autostart",
+        help="Открыть TUI, но не запускать регистрацию сразу (старт по клавише 'r').",
+    ),
+):
+    """Терминальный интерфейс (Textual): логи идут породню, по одному сообщению."""
+    set_verbose_logging(verbose)
+    config = _load_config(config_path)
+    backend = _apply_browser_backend(config, browser)
+    log.info(f"Используется браузерный движок: {backend}")
+    launch_tui_app(config, autostart=not no_autostart)
 
 
 @app.command("ml-suggest")
@@ -660,9 +902,13 @@ def menu_command():
     typer.secho("MassReg — быстрые команды:", fg=typer.colors.CYAN, bold=True)
     typer.echo("")
     typer.secho("Запуск:", fg=typer.colors.GREEN)
-    typer.echo("  python main.py run --config .env           Запустить (режим подбирается автоматически)")
-    typer.echo("  python main.py run --mode sync             Потоковый (обычный) режим")
-    typer.echo("  python main.py run --mode async            Асинхронный режим")
+    typer.echo("  python main.py                               TUI (Textual): логи породню, автозапуск")
+    typer.echo("  python main.py run --config .env             Запустить (режим подбирается автоматически)")
+    typer.echo("  python main.py run --mode sync               Потоковый (обычный) режим")
+    typer.echo("  python main.py run --mode async              Асинхронный режим")
+    typer.echo("  python main.py run --no-tui                  Запуск без TUI (обычная консоль)")
+    typer.echo("  python main.py cli                           То же: запуск без TUI")
+    typer.echo("  python main.py tui                           Только TUI (--no-autostart — старт по 'r')")
     typer.echo("")
     typer.secho("Конфигурация:", fg=typer.colors.GREEN)
     typer.echo("  python main.py setup                       Создать .env из .env.example")
