@@ -37,15 +37,34 @@ from .proxy_manager import ProxyManager
 # ---------------------------------------------------------------------------
 
 _PW_INSTALL_LOCK: Optional[asyncio.Lock] = None
+_PW_LOCK_LOOP: Optional[int] = None
 _PW_BROWSERS_READY = False
 _PW_LAST_ERROR: Optional[str] = None
+_CAMOUFOX_READY: Optional[bool] = None  # None = ещё не проверяли
+
+
+def reset_playwright_install_cache():
+    """Сбросить кэш успешной установки (вызывается при свежей ошибке запуска)."""
+    global _PW_BROWSERS_READY, _CAMOUFOX_READY
+    _PW_BROWSERS_READY = False
+    _CAMOUFOX_READY = None
 
 
 def _get_install_lock() -> asyncio.Lock:
-    """Ленивое создание asyncio.Lock внутри запущенного event loop."""
-    global _PW_INSTALL_LOCK
-    if _PW_INSTALL_LOCK is None:
+    """Создать asyncio.Lock, привязанный к ТЕКУЩЕМУ event loop.
+
+    ВАЖНО: в синхронном режиме каждая регистрация запускается через
+    asyncio.run() в отдельном потоке — свой event loop. Глобальный Lock,
+    созданный в одном loop, в другом вызывает
+    "… is bound to a different event loop". Поэтому lock пересоздаётся
+    при смене работающего loop (в пределах одного loop асинхронные
+    потоки разделяют один lock и не плодят параллельные установки).
+    """
+    global _PW_INSTALL_LOCK, _PW_LOCK_LOOP
+    loop_id = id(asyncio.get_running_loop())
+    if _PW_INSTALL_LOCK is None or _PW_LOCK_LOOP != loop_id:
         _PW_INSTALL_LOCK = asyncio.Lock()
+        _PW_LOCK_LOOP = loop_id
     return _PW_INSTALL_LOCK
 
 # Регулярка для извлечения имени браузера из сообщения об ошибке
@@ -134,10 +153,82 @@ def _is_executable_missing_error(message: str) -> bool:
     return "executable doesn't exist" in lowered or "playwright install" in lowered
 
 
-def reset_playwright_install_cache():
-    """Сбросить кэш успешной установки (вызывается при свежей ошибке запуска)."""
-    global _PW_BROWSERS_READY
-    _PW_BROWSERS_READY = False
+def _playwright_browsers_root() -> Optional[Path]:
+    """Каталог, куда Playwright скачивает браузеры (по умолчанию ~/.cache/ms-playwright
+    на Linux, %LOCALAPPDATA%\\ms-playwright на Windows)."""
+    env = os.environ.get("PLAYWRIGHT_BROWSERS_PATH")
+    if env:
+        try:
+            return Path(env).expanduser()
+        except Exception:
+            return None
+    try:
+        from playwright._impl._driver import compute_driver_dir
+
+        driver_dir = Path(compute_driver_dir())
+        # driver лежит в site-packages/playwright/driver — поднимаемся до site-packages
+        for parent in driver_dir.parents:
+            if parent.name.lower() in ("site-packages", "lib"):
+                candidates = [parent.parent / "ms-playwright",
+                              parent / "ms-playwright"]
+                for c in candidates:
+                    if c.exists():
+                        return c
+    except Exception:
+        pass
+    home = Path.home()
+    for cand in (
+        home / "AppData" / "Local" / "ms-playwright",   # Windows
+        home / ".cache" / "ms-playwright",              # Linux
+        home / "Library" / "Caches" / "ms-playwright",  # macOS
+    ):
+        if cand.exists():
+            return cand
+    return None
+
+
+def _find_headless_shell_executable() -> Optional[str]:
+    """Найти бинарник chrome-headless-shell в каталоге браузеров Playwright.
+
+    Надёжный способ без приватных API (в разных версиях playwright они разные):
+    ищем каталоги вида chromium_headless_shell-* / chromium-headless-shell-* и
+    внутри — исполняемый файл.
+    """
+    root = _playwright_browsers_root()
+    if root is None or not root.exists():
+        return None
+    # Порядок поиска исполняемых файлов: сначала «родной» для текущей ОС,
+    # затем остальные варианты (важно для тестов и переноса кэша браузеров
+    # между машинами с разными ОС).
+    exe_names = ["chrome-headless-shell"]
+    if os.name == "nt":
+        exe_names.insert(0, "chrome-headless-shell.exe")
+    else:
+        exe_names.append("chrome-headless-shell.exe")
+    try:
+        for d in sorted(root.iterdir(), reverse=True):
+            if not d.is_dir():
+                continue
+            name = d.name.lower()
+            if "headless" not in name or not name.startswith("chromium"):
+                continue
+            for sub in ("chrome-headless-shell-win64", "chrome-headless-shell-linux64",
+                        "chrome-headless-shell-mac", "."):
+                cand_dir = d / sub
+                if not cand_dir.exists():
+                    continue
+                for exe in exe_names:
+                    cand = cand_dir / exe
+                    if cand.exists():
+                        return str(cand)
+            # запасной вариант — рекурсивный поиск одного файла
+            for exe in exe_names:
+                matches = list(d.rglob(exe))
+                if matches:
+                    return str(matches[0])
+    except Exception:
+        return None
+    return None
 
 
 def _headless_shell_installed() -> bool:
@@ -149,16 +240,7 @@ def _headless_shell_installed() -> bool:
     Если его нет, а обычный Chromium установлен — мы подменим канал запуска,
     чтобы не требовать вторую загрузку (~100 МБ).
     """
-    try:
-        from playwright.sync_api import sync_playwright
-
-        with sync_playwright() as pw:
-            path = pw.chromium._browser_type_executable_path(  # type: ignore[attr-defined]
-                channel="chromium-headless-shell"
-            )
-            return bool(path) and Path(path).exists()
-    except Exception:
-        return False
+    return _find_headless_shell_executable() is not None
 
 
 class AsyncMicrosoftRegistrator:
@@ -244,7 +326,7 @@ class AsyncMicrosoftRegistrator:
 
     @staticmethod
     def _resolve_camoufox_cli() -> Optional[str]:
-        """Найти исполняемый файл Camoufox в текущем окружении."""
+        """Найти способ запустить Camoufox CLI в текущем окружении."""
         candidates = [
             shutil.which("camoufox"),
             os.path.join(os.path.dirname(sys.executable), "camoufox"),
@@ -253,37 +335,83 @@ class AsyncMicrosoftRegistrator:
         for candidate in candidates:
             if candidate and os.path.exists(candidate):
                 return candidate
-        return None
+        # Вариант без скрипта в PATH: python -m camoufox (актуально для Windows,
+        # где Scripts\camoufox.exe может отсутствовать)
+        try:
+            import camoufox  # noqa: F401
+            return "python-module"
+        except Exception:
+            return None
 
-    def _ensure_camoufox_runtime(self) -> bool:
-        """Убедиться, что Camoufox runtime установлен и готов к запуску."""
-        cli_path = self._resolve_camoufox_cli()
+    @classmethod
+    def _run_camoufox_cli(cls, args: list, timeout: int) -> subprocess.CompletedProcess:
+        """Выполнить Camoufox CLI (или `python -m camoufox`) с указанными аргументами."""
+        cli_path = cls._resolve_camoufox_cli()
         if not cli_path:
-            log.warning("Camoufox CLI не найден в окружении. Используется Chromium fallback.")
+            raise FileNotFoundError("Camoufox CLI не найден")
+        cmd = [sys.executable, "-m", "camoufox", *args] if cli_path == "python-module" \
+            else [cli_path, *args]
+        return subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            cwd=os.getcwd(),
+            timeout=timeout,
+            check=False,
+        )
+
+    @staticmethod
+    def _camoufox_browser_ready() -> bool:
+        """Проверить наличие скачанного Camoufox browser напрямую (без subprocess)."""
+        try:
+            from camoufox.pkgman import camoufox_path
+
+            # download_if_missing=False — не скачиваем молча гигабайты,
+            # только проверяем локальное присутствие браузера
+            return Path(camoufox_path(download_if_missing=False)).exists()
+        except Exception:
             return False
 
-        log.info("Проверка/установка Camoufox runtime...")
+    def _ensure_camoufox_runtime(self) -> bool:
+        """Убедиться, что Camoufox runtime установлен и готов к запуску.
+
+        КЭШ: проверка выполняется один раз на процесс. Если браузер уже
+        скачан — никаких повторных `camoufox fetch` (раньше полная
+        перепроверка/докачка запускалась при КАЖДОМ старте браузера,
+        что приводило к лавине предупреждений и откатов на Chromium).
+        """
+        global _CAMOUFOX_READY
+        if _CAMOUFOX_READY is not None:
+            return _CAMOUFOX_READY
+
+        if self._camoufox_browser_ready():
+            _CAMOUFOX_READY = True
+            return True
+
+        if not self._resolve_camoufox_cli():
+            log.warning("Camoufox CLI не найден в окружении. Используется Chromium fallback.")
+            _CAMOUFOX_READY = False
+            return False
+
+        log.info("Camoufox браузер не скачан — запускаю `camoufox fetch` (разовая операция)...")
         try:
-            result = subprocess.run(
-                [cli_path, "fetch"],
-                capture_output=True,
-                text=True,
-                cwd=os.getcwd(),
-                timeout=600,
-                check=False,
-            )
+            result = self._run_camoufox_cli(["fetch"], timeout=900)
         except (subprocess.SubprocessError, OSError, ValueError) as exc:
             log.warning(f"Не удалось запустить camoufox fetch: {exc}")
+            _CAMOUFOX_READY = False
             return False
 
         output = "\n".join(part for part in (result.stdout, result.stderr) if part).strip()
-        if result.returncode == 0:
-            log.info("Camoufox runtime успешно установлен.")
+        if result.returncode == 0 and self._camoufox_browser_ready():
+            log.info("✅ Camoufox runtime успешно установлен.")
+            _CAMOUFOX_READY = True
             return True
 
         if output:
             log.warning(output[:2000])
-        log.warning("Camoufox runtime недоступен. Используется Chromium fallback.")
+        log.warning("Camoufox runtime недоступен. Используется Chromium fallback. "
+                    "Для антидетект-движка выполните вручную: python -m camoufox fetch")
+        _CAMOUFOX_READY = False
         return False
 
     # ============================================

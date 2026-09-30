@@ -240,12 +240,41 @@ def check_setup(config: Config) -> bool:
     return True
 
 
-def run_sync(config: Config):
-    """Запустить регистрацию в синхронном режиме."""
+def _install_queue_log_handler() -> None:
+    """Переключить консольный вывод логов в очередь TUI.
+
+    Каждый лог становится отдельной записью очереди; Textual выводит их
+    построчно (породню), поэтому сообщения из 10 потоков не слипаются.
+    Файловый handler (logs/*.log) остаётся подключённым — запись в файл
+    продолжается как раньше.
+    """
+    import sys
+
+    from core.tui import LogQueueHandler
+
+    for handler in list(log.logger.handlers):
+        if type(handler).__name__ == "StreamHandler" and \
+                getattr(handler, "stream", None) in (sys.stderr, sys.stdout):
+            log.logger.removeHandler(handler)
+    if not any(isinstance(h, LogQueueHandler) for h in log.logger.handlers):
+        log.logger.addHandler(LogQueueHandler())
+
+
+def run_sync(config: Config, progress_cb=None):
+    """Запустить регистрацию в синхронном режиме.
+
+    progress_cb: необязательный колбэк (done, total, success, failed)
+    для внешних интерфейсов (TUI/GUI).
+    """
     worker = Worker(config)
 
     def on_progress(done, total, success, failed):
         log.info(f"Прогресс: {done}/{total} (успех: {success}, неудача: {failed})")
+        if progress_cb:
+            try:
+                progress_cb(done, total, success, failed)
+            except Exception:
+                pass
 
     def on_account(account):
         log.info(f"Аккаунт: {account}")
@@ -268,17 +297,41 @@ def run_sync(config: Config):
         worker.stop()
 
 
-async def run_async(config: Config):
-    """Запустить регистрацию в асинхронном режиме."""
+async def run_async(config: Config, progress_cb=None):
+    """Запустить регистрацию в асинхронном режиме.
+
+    progress_cb: необязательный колбэк (done, total, success, failed).
+    """
     from workers.async_worker import AsyncWorker
 
     worker = AsyncWorker(config)
+
+    if progress_cb:
+        def on_progress(done, total, success, failed):
+            try:
+                progress_cb(done, total, success, failed)
+            except Exception:
+                pass
+
+        worker.on_progress = on_progress
 
     try:
         await worker.run()
     except KeyboardInterrupt:
         log.warning("Прервано пользователем (Ctrl+C)")
         worker.stop()
+
+
+def launch_tui_app(config: Config) -> None:
+    """Запустить терминальный интерфейс (Textual) с лого-очередью."""
+    try:
+        from core.tui import MassRegApp
+    except ImportError as exc:
+        log.error("Для TUI нужен пакет textual. Установите: pip install textual")
+        raise typer.Exit(code=1) from exc
+
+    _install_queue_log_handler()
+    MassRegApp(config=config).run()
 
 
 def ml_suggest(config: Config):
@@ -425,6 +478,11 @@ def main(
         "-m",
         help="Режим запуска: auto (подбирается автоматически), sync или async.",
     ),
+    tui: bool = typer.Option(
+        False,
+        "--tui",
+        help="Запустить терминальный интерфейс (Textual): логи идут породню, по одному.",
+    ),
     check: bool = typer.Option(
         False,
         "--check",
@@ -463,6 +521,10 @@ def main(
 
     if ml_suggest:
         ml_suggest(config)
+        raise typer.Exit(code=0)
+
+    if tui:
+        launch_tui_app(config)
         raise typer.Exit(code=0)
 
     if resolve_run_mode(config, mode) == "async":
@@ -570,6 +632,11 @@ def run_command(
         "-m",
         help="Режим: auto (автоподбор), sync (обычный) или async (асинхронный).",
     ),
+    tui: bool = typer.Option(
+        False,
+        "--tui",
+        help="Запустить через терминальный интерфейс Textual (логи породню, по одному).",
+    ),
 ):
     """Запустить массовую регистрацию."""
     set_verbose_logging(verbose)
@@ -582,10 +649,42 @@ def run_command(
         ok = check_setup(config)
         raise typer.Exit(code=0 if ok else 1)
 
+    if tui:
+        launch_tui_app(config)
+        return
+
     if resolve_run_mode(config, None if mode == "auto" else mode) == "async":
         asyncio.run(run_async(config))
     else:
         run_sync(config)
+
+
+@app.command("tui")
+def tui_command(
+    verbose: bool = typer.Option(
+        False,
+        "--verbose",
+        "-v",
+        help="Показать подробный вывод во время работы интерфейса.",
+    ),
+    browser: str | None = typer.Option(
+        None,
+        "--browser",
+        help="Выбрать движок браузера: camoufox или chromium.",
+    ),
+    config_path: str = typer.Option(
+        ".env",
+        "--config",
+        "-c",
+        help="Путь к файлу .env.",
+    ),
+):
+    """Терминальный интерфейс (Textual): логи идут породню, по одному сообщению."""
+    set_verbose_logging(verbose)
+    config = _load_config(config_path)
+    backend = _apply_browser_backend(config, browser)
+    log.info(f"Используется браузерный движок: {backend}")
+    launch_tui_app(config)
 
 
 @app.command("ml-suggest")
@@ -663,6 +762,7 @@ def menu_command():
     typer.echo("  python main.py run --config .env           Запустить (режим подбирается автоматически)")
     typer.echo("  python main.py run --mode sync             Потоковый (обычный) режим")
     typer.echo("  python main.py run --mode async            Асинхронный режим")
+    typer.echo("  python main.py tui                         Терминальный GUI (Textual, логи породню)")
     typer.echo("")
     typer.secho("Конфигурация:", fg=typer.colors.GREEN)
     typer.echo("  python main.py setup                       Создать .env из .env.example")
