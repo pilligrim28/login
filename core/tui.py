@@ -238,8 +238,9 @@ class MassRegApp(App[None]):
         try:
             import sys as _sys
             from core.logger import log as app_log
+            from core.log_handlers import ThreadSafeStreamHandler
             for handler in list(getattr(app_log.logger, "handlers", [])):
-                if type(handler).__name__ == "StreamHandler" and \
+                if isinstance(handler, ThreadSafeStreamHandler) and \
                         getattr(handler, "stream", None) in (_sys.stdout, _sys.stderr):
                     app_log.logger.removeHandler(handler)
             if not any(isinstance(h, LogQueueHandler) for h in app_log.logger.handlers):

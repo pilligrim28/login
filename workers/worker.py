@@ -233,7 +233,7 @@ class Worker:
                     self.on_progress(self.done, self.total, self.success, self.failed)
                 except Exception:
                     pass
-            if self.on_account:
+            if self.on_account and result:
                 try:
                     self.on_account({"index": index, "result": result})
                 except Exception:
