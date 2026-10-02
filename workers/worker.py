@@ -92,6 +92,29 @@ class Worker:
         self.on_progress: Optional[Callable[[int, int, int, int], None]] = None
         self.on_account: Optional[Callable[[Dict], None]] = None
         self.on_finished: Optional[Callable[[], None]] = None
+        # Последний шаг отдельной задачи (index, message) — для TUI
+        self.on_task_state: Optional[Callable[[int, str], None]] = None
+
+        # Живое состояние задач (для панели TUI): индекс → последний шаг ядра
+        self.task_states: Dict[int, str] = {}
+        self.active_count = 0
+
+    # ------------------------------------------------------------------
+    def _live_status(self, index: int, message: str) -> None:
+        """Последний шаг регистрации задачи — видно в реальном времени."""
+        self.task_states[index] = message
+        if self.on_task_state:
+            try:
+                self.on_task_state(index, message)
+            except Exception:
+                pass
+
+    def _task_started(self, index: int) -> None:
+        self.active_count += 1
+
+    def _task_done(self, index: int) -> None:
+        self.active_count = max(0, self.active_count - 1)
+        self.task_states.pop(index, None)
 
     # ------------------------------------------------------------------
     def _load_services(self) -> List[str]:
@@ -195,15 +218,29 @@ class Worker:
                 return None
 
             service = self.services[(index - 1) % len(self.services)]
+            self._task_started(index)
+
+            # Индекс задачи доступен и в TUI-строке состояния, и в логах.
+            prefix = f"[{index}/{self.total}]"
 
             def on_status(status: str, data: dict) -> None:
                 email = (data or {}).get("email", "")
                 if status == "starting":
-                    log.info(f"[{index}/{self.total}] ▶️ Начало: {email}")
+                    log.info(f"{prefix} ▶️ Начало: {email}")
                 elif status == "success":
-                    log.info(f"[{index}/{self.total}] ✅ {email}")
+                    log.info(f"{prefix} ✅ {email}")
                 elif status == "failed":
-                    log.info(f"[{index}/{self.total}] ❌ {email}: {(data or {}).get('error', '')}")
+                    log.info(f"{prefix} ❌ {email}: {(data or {}).get('error', '')}")
+
+            def on_log(message: str) -> None:
+                """Логи ядра → в лог-панель; заодно обновляем живое состояние."""
+                text = str(message)
+                # Ядро пишет шаги без индекса — добавляем, чтобы было видно,
+                # какая из параллельных задач говорит (как в обычных логах).
+                if not text.startswith("["):
+                    text = f"{prefix} {text}"
+                log.info(text)
+                self._live_status(index, text)
 
             try:
                 registrator = get_registrator(
@@ -213,13 +250,13 @@ class Worker:
                     proxy_manager=self.proxy_manager,
                     config=self.config,
                     on_status=on_status,
-                    on_log=lambda msg: log.info(msg),
+                    on_log=on_log,
                 )
                 result = await registrator.register()
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
-                log.error(f"❌ [{index}/{self.total}] Исключение: {exc}")
+                log.error(f"❌ {prefix} Исключение: {exc}")
                 result = None
 
             self.done += 1
@@ -228,6 +265,7 @@ class Worker:
             else:
                 self.failed += 1
 
+            self._task_done(index)
             if self.on_progress:
                 try:
                     self.on_progress(self.done, self.total, self.success, self.failed)
