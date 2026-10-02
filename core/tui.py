@@ -23,7 +23,7 @@ from typing import Optional
 
 from textual.app import App, ComposeResult
 from textual.containers import Horizontal, VerticalScroll
-from textual.widgets import Footer, Header, Input, Static
+from textual.widgets import Footer, Header, Input, ProgressBar, Static
 
 
 # ---------------------------------------------------------------------------
@@ -158,6 +158,21 @@ class MassRegApp(App[None]):
         background: $panel;
     }
 
+    #progress-row {
+        height: 1;
+        padding: 0 1;
+        background: $boost;
+    }
+
+    #progress-caption {
+        width: auto;
+        padding-right: 1;
+    }
+
+    #progress-bar {
+        width: 1fr;
+    }
+
     #log-pane {
         height: 1fr;
         border: round $primary;
@@ -209,6 +224,10 @@ class MassRegApp(App[None]):
             yield StatLabel("Успех", "success")
             yield StatLabel("Неудача", "failed")
             yield StatLabel("Время", "elapsed")
+        with Horizontal(id="progress-row"):
+            yield Static("[b]Выполнение:[/]", id="progress-caption")
+            yield ProgressBar(total=100, show_percentage=True, show_eta=True,
+                              id="progress-bar")
         yield LogPane(id="log-pane")
         yield StatusBar()
         with Horizontal(id="controls"):
@@ -225,6 +244,11 @@ class MassRegApp(App[None]):
             conc = (self._config.get("worker.max_concurrency", None)
                     or self._config.get("worker.threads", 10))
             self.query_one("#stat-mode", StatLabel).set_value(conc)
+            try:
+                total = int(self._config.get("worker.total_registrations", 100) or 100)
+            except (TypeError, ValueError):
+                total = 100
+            self._reset_progress(total)
         if self._autostart and self._config is not None:
             self._log_ui("[INFO] TUI готов — автозапуск регистрации…")
             self.set_timer(0.3, self.start_run)
@@ -238,8 +262,9 @@ class MassRegApp(App[None]):
         try:
             import sys as _sys
             from core.logger import log as app_log
+            from core.log_handlers import ThreadSafeStreamHandler
             for handler in list(getattr(app_log.logger, "handlers", [])):
-                if type(handler).__name__ == "StreamHandler" and \
+                if isinstance(handler, ThreadSafeStreamHandler) and \
                         getattr(handler, "stream", None) in (_sys.stdout, _sys.stderr):
                     app_log.logger.removeHandler(handler)
             if not any(isinstance(h, LogQueueHandler) for h in app_log.logger.handlers):
@@ -273,6 +298,49 @@ class MassRegApp(App[None]):
         self.query_one("#stat-progress", StatLabel).set_value(f"{done}/{total}")
         self.query_one("#stat-success", StatLabel).set_value(success)
         self.query_one("#stat-failed", StatLabel).set_value(failed)
+        self._update_progress(done, total, success, failed)
+
+    # -- прогресс-бар -----------------------------------------------------------
+
+    def _reset_progress(self, total: int) -> None:
+        """Сбросить полоску выполнения перед новым запуском."""
+        try:
+            bar = self.query_one("#progress-bar", ProgressBar)
+            bar.total = max(total, 1)
+            bar.progress = 0
+            bar.show_eta = False
+        except Exception:
+            pass
+
+    def _update_progress(self, done: int, total: int,
+                         success: int = 0, failed: int = 0) -> None:
+        """Обновить полоску выполнения + скорость/ETA (вызывается из UI-потока)."""
+        try:
+            bar = self.query_one("#progress-bar", ProgressBar)
+        except Exception:
+            return
+        total = max(int(total or 0), 1)
+        if bar.total != total:
+            bar.total = total
+        # Присваивание .progress — без анимации (в отличие от update(advance=...)),
+        # полоска мгновенно показывает актуальное значение.
+        bar.progress = min(done, total)
+        now = time.time()
+        if done > 0 and self._start_ts is not None:
+            elapsed = max(now - self._start_ts, 1e-6)
+            rate = done / elapsed
+            remaining = max(total - done, 0)
+            eta_s = remaining / rate if rate > 0 else 0.0
+            # ETA считаем сами (ProgressBar.set_eta есть не во всех версиях
+            # textual); скорость и остаток показываем в подписи слева.
+            caption = f"[b]Выполнение:[/] {rate:.2f}/с · осталось ~{int(eta_s)} c"
+        else:
+            bar.show_eta = False
+            caption = "[b]Выполнение:[/]"
+        try:
+            self.query_one("#progress-caption", Static).update(caption)
+        except Exception:
+            pass
 
     # -- запуск / остановка -----------------------------------------------------
 
@@ -298,6 +366,7 @@ class MassRegApp(App[None]):
         self._worker = worker
         self._running = True
         self._start_ts = time.time()
+        self._reset_progress(worker.total)
         self.query_one(StatusBar).set_status(f"▶ Выполняется ({worker.concurrency} параллельно)…")
 
         # Один цикл событий в отдельном потоке: та же асинхронная ядро-логика,
@@ -323,6 +392,18 @@ class MassRegApp(App[None]):
 
     def _on_run_finished(self) -> None:
         self._running = False
+        # Итог: полоска = реально обработанные задачи (done), а не «всё залито»,
+        # иначе при остановке (часть задач не запускалась) 100% было бы ложью.
+        worker = self._worker
+        try:
+            bar = self.query_one("#progress-bar", ProgressBar)
+            if worker is not None and bar.total != worker.total:
+                bar.total = worker.total
+            bar.show_eta = False
+        except Exception:
+            pass
+        if worker is not None:
+            self._update_stats(worker.done, worker.total, worker.success, worker.failed)
         self.query_one(StatusBar).set_status("■ Завершено.")
 
     def action_stop_run(self) -> None:

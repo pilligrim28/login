@@ -41,13 +41,15 @@ _PW_LOCK_LOOP: Optional[int] = None
 _PW_BROWSERS_READY = False
 _PW_LAST_ERROR: Optional[str] = None
 _CAMOUFOX_READY: Optional[bool] = None  # None = ещё не проверяли
+_GEOIP_DB_READY: Optional[bool] = None  # None = ещё не проверяли (база geoip)
 
 
 def reset_playwright_install_cache():
     """Сбросить кэш успешной установки (вызывается при свежей ошибке запуска)."""
-    global _PW_BROWSERS_READY, _CAMOUFOX_READY
+    global _PW_BROWSERS_READY, _CAMOUFOX_READY, _GEOIP_DB_READY
     _PW_BROWSERS_READY = False
     _CAMOUFOX_READY = None
+    _GEOIP_DB_READY = None
 
 
 def _get_install_lock() -> asyncio.Lock:
@@ -362,14 +364,86 @@ class AsyncMicrosoftRegistrator:
 
     @staticmethod
     def _camoufox_browser_ready() -> bool:
-        """Проверить наличие скачанного Camoufox browser напрямую (без subprocess)."""
+        """Проверить наличие скачанного Camoufox browser напрямую (без subprocess).
+
+        Важно: в multiversion-раскладке camoufox>=0.4 функция
+        camoufox_path(download_if_missing=False) может бросить
+        "Version 'official' not found in cache" / CamoufoxNotInstalled даже
+        тогда, когда версии уже скачаны, но активная не выбрана. Поэтому
+        сначала проверяем реальный каталог установок, и только потом —
+        camoufox_path.
+        """
         try:
+            from camoufox import multiversion as mv
+
+            # 1) Multiversion-раскладка (camoufox >= 0.4/0.5): версии лежат в
+            #    <INSTALL_DIR>/browsers/<repo>/<version> с version.json
+            if mv.BROWSERS_DIR.exists():
+                for repo_dir in mv.BROWSERS_DIR.iterdir():
+                    if not repo_dir.is_dir():
+                        continue
+                    for ver_dir in repo_dir.iterdir():
+                        if (ver_dir / "version.json").exists() and any(
+                            (ver_dir / exe).exists()
+                            for exe in ("camoufox.exe", "camoufox")
+                        ):
+                            # Активная версия отсутствует? Выберем эту, чтобы
+                            # AsyncCamoufox знал, какой браузер запускать.
+                            if mv.get_active_path() is None:
+                                try:
+                                    mv.set_active(
+                                        f"browsers/{repo_dir.name}/{ver_dir.name}")
+                                except Exception:
+                                    pass
+                            return True
+
+            # 2) Старая раскладка: браузер прямо в корне INSTALL_DIR
+            install_dir = Path(str(mv.INSTALL_DIR))
+            if (install_dir / "camoufox.exe").exists() or (install_dir / "camoufox").exists():
+                return True
+
+            # 3) Фолбэк: прямой запрос пути (без скачивания)
             from camoufox.pkgman import camoufox_path
 
-            # download_if_missing=False — не скачиваем молча гигабайты,
-            # только проверяем локальное присутствие браузера
             return Path(camoufox_path(download_if_missing=False)).exists()
         except Exception:
+            return False
+
+    @staticmethod
+    def _ensure_geoip_db() -> bool:
+        """Проверить/скачать GeoIP базу Camoufox (один раз на процесс).
+
+        Без geoip/mmdb/*.mmdb запуск с geoip=True падает с FileNotFoundError
+        («maxmind geolite2-ipv4.mmdb»). Скачивание базы (~9 МБ) выполняется
+        штатной функцией camoufox с перебором зеркал; при сетевом сбое
+        возвращается False — вызывающий код отключит geoip, чтобы
+        регистрация не вставала из-за геолокации.
+        """
+        global _GEOIP_DB_READY
+        if _GEOIP_DB_READY is not None:
+            return _GEOIP_DB_READY
+        try:
+            from camoufox import geolocation as geo
+            if not geo.ALLOW_GEOIP:
+                log.warning("Модуль maxminddb не установлен — geoip отключён "
+                            "(pip install camoufox[geoip])")
+                _GEOIP_DB_READY = False
+                return False
+            mmdb_path = geo.get_mmdb_path("ipv4")
+            if mmdb_path.exists() and not geo.needs_update():
+                _GEOIP_DB_READY = True
+                return True
+            log.info(f"Скачиваю GeoIP базу Camoufox → {mmdb_path} ...")
+            geo.download_mmdb()
+            _GEOIP_DB_READY = mmdb_path.exists()
+            if _GEOIP_DB_READY:
+                log.info("GeoIP база Camoufox готова.")
+            else:
+                log.warning("GeoIP база не появилась после скачивания — geoip будет отключён.")
+            return _GEOIP_DB_READY
+        except Exception as exc:
+            log.warning(f"Не удалось скачать GeoIP базу ({exc}) — geoip будет отключён.")
+            _GEOIP_DB_READY = False
             return False
 
     def _ensure_camoufox_runtime(self) -> bool:
@@ -393,24 +467,44 @@ class AsyncMicrosoftRegistrator:
             _CAMOUFOX_READY = False
             return False
 
-        log.info("Camoufox браузер не скачан — запускаю `camoufox fetch` (разовая операция)...")
+        log.info("Camoufox браузер не скачан — запускаю `camoufox sync + fetch` "
+                 "(разовая операция, ~200 МБ)...")
+        # 1) Синхронизируем список версий из репозиториев — без этого fetch
+        #    на некоторых сборках падает с "Version 'official' not found in cache".
         try:
-            result = self._run_camoufox_cli(["fetch"], timeout=900)
-        except (subprocess.SubprocessError, OSError, ValueError) as exc:
-            log.warning(f"Не удалось запустить camoufox fetch: {exc}")
-            _CAMOUFOX_READY = False
-            return False
+            self._run_camoufox_cli(["sync"], timeout=120)
+        except (subprocess.SubprocessError, OSError, ValueError):
+            pass  # sync не критичен — fetch сам подтянет кэш при успехе сети
 
-        output = "\n".join(part for part in (result.stdout, result.stderr) if part).strip()
-        if result.returncode == 0 and self._camoufox_browser_ready():
-            log.info("✅ Camoufox runtime успешно установлен.")
+        last_output = ""
+        for attempt in (1, 2):
+            try:
+                result = self._run_camoufox_cli(["fetch"], timeout=900)
+            except subprocess.TimeoutExpired:
+                log.warning("camoufox fetch: таймаут (медленная сеть?)")
+                continue
+            except (OSError, ValueError) as exc:
+                log.warning(f"Не удалось запустить camoufox fetch: {exc}")
+                break
+
+            output = "\n".join(part for part in (result.stdout, result.stderr) if part).strip()
+            last_output = output
+            if result.returncode == 0 and self._camoufox_browser_ready():
+                log.info("✅ Camoufox runtime успешно установлен.")
+                _CAMOUFOX_READY = True
+                return True
+            if attempt == 1 and not self._camoufox_browser_ready():
+                log.info("Camoufox fetch: первая попытка не удалась, повторяю...")
+
+        if self._camoufox_browser_ready():
             _CAMOUFOX_READY = True
             return True
 
-        if output:
-            log.warning(output[:2000])
-        log.warning("Camoufox runtime недоступен. Используется Chromium fallback. "
-                    "Для антидетект-движка выполните вручную: python -m camoufox fetch")
+        if last_output:
+            log.warning(last_output[:2000])
+        log.warning("Camoufox runtime недоступен (сеть/антивирус блокирует загрузку?). "
+                    "Используется Chromium fallback. Для антидетект-движка выполните "
+                    "вручную: python -m camoufox fetch")
         _CAMOUFOX_READY = False
         return False
 
@@ -631,12 +725,13 @@ class AsyncMicrosoftRegistrator:
                 use_camoufox = False
 
         if use_camoufox:
-            # proxy — ТОЛЬКО здесь, в AsyncCamoufox. new_context() — БЕЗ proxy.
+            # geoip=True требует локальную базу mmdb; без неё запуск падает с
+            # FileNotFoundError — скачиваем один раз, при неудаче отключаем geoip.
             camoufox_kwargs = {
                 "headless": headless,
                 "debug": debug,
                 "humanize": True,
-                "geoip": True,  # Camoufox требует geoip=True при использовании прокси
+                "geoip": self._ensure_geoip_db(),
             }
             if proxy_config:
                 # Camoufox ожидает proxy в формате: server + username/password отдельно

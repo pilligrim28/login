@@ -1,13 +1,19 @@
 import logging
 import os
 from datetime import datetime
-from logging.handlers import RotatingFileHandler
+
+from core.log_handlers import SafeRotatingFileHandler, ThreadSafeStreamHandler
 
 
 class Logger:
     """
     Централизованное логирование.
     Поддержка ротации логов (макс. 5 файлов по 10MB).
+
+    Используются защищённые хендлеры (core/log_handlers.py):
+    - SafeRotatingFileHandler — не падает с "--- Logging error --- /
+      OSError: [Errno 22]" при ротации на Windows;
+    - ThreadSafeStreamHandler — корректная запись из многих потоков.
     """
 
     _instance = None
@@ -24,19 +30,26 @@ class Logger:
 
         self.logger = logging.getLogger("MassReg")
         self.logger.setLevel(logging.INFO)
+        # Не всплываем в root-логгер (Textual/сторонние библиотеки могут
+        # повесить на root свои хендлеры и дублировать вывод).
+        self.logger.propagate = False
 
-        # Файловый handler с ротацией
+        # Очистка повторной инициализации (например, после reload в тестах)
+        for h in list(self.logger.handlers):
+            self.logger.removeHandler(h)
+
+        # Файловый handler с ротацией (безопасный для Windows)
         date_str = datetime.now().strftime("%Y-%m-%d")
-        fh = RotatingFileHandler(
+        fh = SafeRotatingFileHandler(
             f"logs/{date_str}.log",
-            maxBytes=10*1024*1024,  # 10MB
-            backupCount=5,         # 5 резервных файлов
-            encoding="utf-8"
+            maxBytes=10 * 1024 * 1024,  # 10MB
+            backupCount=5,              # 5 резервных файлов
+            encoding="utf-8",
         )
         fh.setLevel(logging.INFO)
 
-        # Консольный handler
-        ch = logging.StreamHandler()
+        # Консольный handler (потокобезопасный)
+        ch = ThreadSafeStreamHandler()
         ch.setLevel(logging.INFO)
 
         # Формат

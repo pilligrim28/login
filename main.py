@@ -208,6 +208,23 @@ def check_setup(config: Config) -> bool:
     if not camoufox_enabled:
         if not _ensure_playwright_browsers():
             ok = False
+    else:
+        # Camoufox выбран движком — проверим, что браузер реально скачан,
+        # и сразу подскажем одну команду для докачки (чтобы не ждать молча
+        # ~200 МБ при первом же старте регистрации).
+        try:
+            from core.registrator_async import AsyncMicrosoftRegistrator
+
+            if not AsyncMicrosoftRegistrator._camoufox_browser_ready():
+                log.warning(
+                    "Camoufox браузер ещё не скачан. Скачайте разово: "
+                    "python -m camoufox fetch  "
+                    "(или переключитесь на Chromium: python main.py run --browser chromium)")
+            # GeoIP база (~9 МБ) — без неё Camoufox падает при запуске;
+            # скачаем заранее, чтобы первая регистрация не ждала сеть.
+            AsyncMicrosoftRegistrator._ensure_geoip_db()
+        except Exception:
+            pass
 
     total = int(config.get("worker.total_registrations", 100) or 100)
     threads = int(config.get("worker.max_concurrency", None)
