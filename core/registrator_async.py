@@ -41,13 +41,15 @@ _PW_LOCK_LOOP: Optional[int] = None
 _PW_BROWSERS_READY = False
 _PW_LAST_ERROR: Optional[str] = None
 _CAMOUFOX_READY: Optional[bool] = None  # None = ещё не проверяли
+_GEOIP_DB_READY: Optional[bool] = None  # None = ещё не проверяли (база geoip)
 
 
 def reset_playwright_install_cache():
     """Сбросить кэш успешной установки (вызывается при свежей ошибке запуска)."""
-    global _PW_BROWSERS_READY, _CAMOUFOX_READY
+    global _PW_BROWSERS_READY, _CAMOUFOX_READY, _GEOIP_DB_READY
     _PW_BROWSERS_READY = False
     _CAMOUFOX_READY = None
+    _GEOIP_DB_READY = None
 
 
 def _get_install_lock() -> asyncio.Lock:
@@ -407,6 +409,43 @@ class AsyncMicrosoftRegistrator:
         except Exception:
             return False
 
+    @staticmethod
+    def _ensure_geoip_db() -> bool:
+        """Проверить/скачать GeoIP базу Camoufox (один раз на процесс).
+
+        Без geoip/mmdb/*.mmdb запуск с geoip=True падает с FileNotFoundError
+        («maxmind geolite2-ipv4.mmdb»). Скачивание базы (~9 МБ) выполняется
+        штатной функцией camoufox с перебором зеркал; при сетевом сбое
+        возвращается False — вызывающий код отключит geoip, чтобы
+        регистрация не вставала из-за геолокации.
+        """
+        global _GEOIP_DB_READY
+        if _GEOIP_DB_READY is not None:
+            return _GEOIP_DB_READY
+        try:
+            from camoufox import geolocation as geo
+            if not geo.ALLOW_GEOIP:
+                log.warning("Модуль maxminddb не установлен — geoip отключён "
+                            "(pip install camoufox[geoip])")
+                _GEOIP_DB_READY = False
+                return False
+            mmdb_path = geo.get_mmdb_path("ipv4")
+            if mmdb_path.exists() and not geo.needs_update():
+                _GEOIP_DB_READY = True
+                return True
+            log.info(f"Скачиваю GeoIP базу Camoufox → {mmdb_path} ...")
+            geo.download_mmdb()
+            _GEOIP_DB_READY = mmdb_path.exists()
+            if _GEOIP_DB_READY:
+                log.info("GeoIP база Camoufox готова.")
+            else:
+                log.warning("GeoIP база не появилась после скачивания — geoip будет отключён.")
+            return _GEOIP_DB_READY
+        except Exception as exc:
+            log.warning(f"Не удалось скачать GeoIP базу ({exc}) — geoip будет отключён.")
+            _GEOIP_DB_READY = False
+            return False
+
     def _ensure_camoufox_runtime(self) -> bool:
         """Убедиться, что Camoufox runtime установлен и готов к запуску.
 
@@ -686,12 +725,13 @@ class AsyncMicrosoftRegistrator:
                 use_camoufox = False
 
         if use_camoufox:
-            # proxy — ТОЛЬКО здесь, в AsyncCamoufox. new_context() — БЕЗ proxy.
+            # geoip=True требует локальную базу mmdb; без неё запуск падает с
+            # FileNotFoundError — скачиваем один раз, при неудаче отключаем geoip.
             camoufox_kwargs = {
                 "headless": headless,
                 "debug": debug,
                 "humanize": True,
-                "geoip": True,  # Camoufox требует geoip=True при использовании прокси
+                "geoip": self._ensure_geoip_db(),
             }
             if proxy_config:
                 # Camoufox ожидает proxy в формате: server + username/password отдельно

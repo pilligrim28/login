@@ -220,6 +220,9 @@ def check_setup(config: Config) -> bool:
                     "Camoufox браузер ещё не скачан. Скачайте разово: "
                     "python -m camoufox fetch  "
                     "(или переключитесь на Chromium: python main.py run --browser chromium)")
+            # GeoIP база (~9 МБ) — без неё Camoufox падает при запуске;
+            # скачаем заранее, чтобы первая регистрация не ждала сеть.
+            AsyncMicrosoftRegistrator._ensure_geoip_db()
         except Exception:
             pass
 
