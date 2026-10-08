@@ -173,6 +173,23 @@ class MassRegApp(App[None]):
         width: 1fr;
     }
 
+    #live-summary {
+        height: 1;
+        padding: 0 1;
+        background: $boost;
+    }
+
+    #live-pane {
+        height: auto;
+        max-height: 12;
+        padding: 0 1;
+        background: $surface;
+    }
+
+    .live-task {
+        height: 1;
+    }
+
     #log-pane {
         height: 1fr;
         border: round $primary;
@@ -207,6 +224,8 @@ class MassRegApp(App[None]):
         self._running = False
         self._start_ts: Optional[float] = None
         self._handler_installed = False
+        # Живые задачи: index → (текст последнего шага, widget)
+        self._live_tasks: dict[int, tuple[str, Optional[Static]]] = {}
 
     # -- композация ---------------------------------------------------------
 
@@ -228,6 +247,9 @@ class MassRegApp(App[None]):
             yield Static("[b]Выполнение:[/]", id="progress-caption")
             yield ProgressBar(total=100, show_percentage=True, show_eta=True,
                               id="progress-bar")
+        # Живые задачи: сколько активных + последние шаги каждой регистрации
+        yield Static("Задач в работе: [bold]0[/]", id="live-summary")
+        yield VerticalScroll(id="live-pane")
         yield LogPane(id="log-pane")
         yield StatusBar()
         with Horizontal(id="controls"):
@@ -285,6 +307,71 @@ class MassRegApp(App[None]):
 
     def _log_ui(self, message: str) -> None:
         push_log(message)
+
+    # -- живые задачи ---------------------------------------------------------
+
+    def _update_live_task(self, index: int, message: str) -> None:
+        """Обновить строку живой задачи (вызывается только из UI-потока)."""
+        pane = self.query_one("#live-pane", VerticalScroll)
+        widget = self._live_tasks.get(index, (None, None))[1]
+        if widget is not None and widget.parent is None:
+            widget = None  # удалён при очистке/сворачивании — пересоздадим
+        if widget is None:
+            widget = Static("", classes="live-task")
+            pane.mount(widget)
+        text = message if len(message) <= 200 else message[:197] + "..."
+        widget.update(f"[cyan]#{index:<4}[/] {text}")
+        self._live_tasks[index] = (text, widget)
+        self._refresh_live_summary()
+
+    def _remove_live_task(self, index: int) -> None:
+        """Задача завершена → строка уходит из панели (остаток в логах)."""
+        entry = self._live_tasks.pop(index, None)
+        if entry and entry[1] is not None:
+            try:
+                entry[1].remove()
+            except Exception:
+                pass
+        self._refresh_live_summary()
+
+    def _refresh_live_summary(self) -> None:
+        worker = self._worker
+        active = len(self._live_tasks)
+        total = getattr(worker, "total", 0) if worker else 0
+        done = getattr(worker, "done", 0) if worker else 0
+        ok = getattr(worker, "success", 0) if worker else 0
+        bad = getattr(worker, "failed", 0) if worker else 0
+        try:
+            self.query_one("#live-summary", Static).update(
+                f"Активных задач: [bold]{active}[/] · "
+                f"готово [bold]{done}/{total}[/] · "
+                f"✅ {ok} · ❌ {bad}"
+            )
+        except Exception:
+            pass
+
+    def _clear_live_tasks(self) -> None:
+        for _, widget in self._live_tasks.values():
+            if widget is not None:
+                try:
+                    widget.remove()
+                except Exception:
+                    pass
+        self._live_tasks.clear()
+        self._refresh_live_summary()
+
+    def _live_task_event(self, index: int, message: str) -> None:
+        """Событие шага задачи из воркера (уже в UI-потоке).
+
+        Завершённые задачи (есть итог/исключение/все попытки) снимаем с
+        доски — их результат видно в логах и в статистике.
+        """
+        finished = ("✅" in message or "❌" in message
+                    or "Исключение" in message or "исчерпаны" in message)
+        if finished:
+            self._remove_live_task(index)
+        else:
+            self._update_live_task(index, message)
 
     # -- статистика ------------------------------------------------------------
 
@@ -362,11 +449,21 @@ class MassRegApp(App[None]):
             self._update_stats, done, total, ok, bad
         )
         worker.on_finished = lambda: self.call_from_thread(self._on_run_finished)
+        # Живые задачи: ядро сообщает каждый шаг регистрации
+        worker.on_task_state = lambda idx, msg: self.call_from_thread(
+            self._live_task_event, idx, msg
+        )
 
         self._worker = worker
         self._running = True
         self._start_ts = time.time()
         self._reset_progress(worker.total)
+        self._clear_live_tasks()
+        try:
+            self.query_one("#live-pane", VerticalScroll).display = True
+            self.query_one("#live-summary", Static).display = True
+        except Exception:
+            pass
         self.query_one(StatusBar).set_status(f"▶ Выполняется ({worker.concurrency} параллельно)…")
 
         # Один цикл событий в отдельном потоке: та же асинхронная ядро-логика,
@@ -404,6 +501,13 @@ class MassRegApp(App[None]):
             pass
         if worker is not None:
             self._update_stats(worker.done, worker.total, worker.success, worker.failed)
+        # Все задачи окончены → живая доска пустая, панель скрываем до следующего запуска
+        self._clear_live_tasks()
+        try:
+            self.query_one("#live-pane", VerticalScroll).display = False
+            self.query_one("#live-summary", Static).display = False
+        except Exception:
+            pass
         self.query_one(StatusBar).set_status("■ Завершено.")
 
     def action_stop_run(self) -> None:
