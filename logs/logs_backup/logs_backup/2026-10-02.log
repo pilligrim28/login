@@ -1,0 +1,4 @@
+11:57:28 [INFO] Test info message
+11:57:28 [WARNING] Test warning message
+11:57:28 [ERROR] Test error message
+11:57:28 [INFO] Test success message

@@ -1,12 +1,2 @@
-# Python compiled files
-__pycache__/
-*.pyc
-
-# IDE configuration
-.idea/
-
-# Logs
-logs/
-# SQLite database
-*.db
-*.sqlite3
+#Git bundle files
+*.bundle
